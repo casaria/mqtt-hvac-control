@@ -1,0 +1,1177 @@
+# ===========================================================
+#  HVAC_MULTI_Z — multi-Zone HVAC Controller  (Merged v2)
+#  Board   : ESP32-S3-DevKitC-1
+#  Framework: esp-idf
+#
+#  ┌─ FLOOR 1 (Zone 0) ──────────────────────────────────┐
+#  │  • Daikin split via Faikin firmware (MQTT: Faikin/AC1)│
+#  │  • Gas furnace on relay4_4_1 pins 4–6 (W1, W2, G)     │
+#  │  • Thermostat inputs: PCF8575 pins 0–3               │
+#  │  • Signal routing: relay4_4_1 (R1_1–R1_4)           │
+#  │  • No duct damper on Floor 1 (SSR_0/SSR_1 in use for │
+#  │    other purposes)                                   │
+#  │  • Heating modes: heat_pump | gas | combined         │
+#  └──────────────────────────────────────────────────────┘
+#  ┌─ FLOOR 2 (Zones 1–3) ───────────────────────────────┐
+#  │  • Daikin split via Faikin firmware (MQTT: Faikin/AC2)│
+#  │  • 3 zone thermostats on PCF8575 pins 4–15           │
+#  │  • No signal routing relay board for Floor 2 zones    │
+#  │  • Dampers: HVAC_DAMPER_1/2/3 (SSR_2–7, 2 SSR each) │
+#  │  • 4× PWM fans (fanhub_pwm0–3), auto-speed per zone │
+#  │  • 3× DS18B20 zone temps + 4× BMP085 (Optional) duct sensors   │
+#  │  • BME680 AQI (calculated IAQ 0–500)                 │
+#  └──────────────────────────────────────────────────────┘
+#
+#  Daikin integration: Faikin firmware on separate ESP32.
+#  This device sends JSON to Faikin/{device}/command and
+#  receives state from Faikin/{device}/state via MQTT.
+#  No Arduino-dependent external component needed.
+#
+#  SSR assignment (PCF8574, 2-relay proportional, power-open + power-close):
+#    SSR_0: Floor1 spare/in-use  SSR_4: Zone 2 CLOSE
+#    SSR_1: Floor1 spare/in-use  SSR_5: Zone 2 OPEN
+#    SSR_2: Zone 1 CLOSE         SSR_6: Zone 3 CLOSE
+#    SSR_3: Zone 1 OPEN          SSR_7: Zone 3 OPEN
+#  NOTE: No duct damper on Floor 1. SSR_0+SSR_1 wired but not used as damper.
+#
+#  Furnace relays on relay4_4_1 (PCA9554 0x38) — pins 0–3:  ← CONFIRMED correct
+#    furnace_Y_BLOWER → relay4_4_1 pin 0
+#    furnace_W        → relay4_4_1 pin 1
+#    furnace_G        → relay4_4_1 pin 2
+#    furnace_spare    → relay4_4_1 pin 3
+#  Note: only 1 relay board total; no AUX relay
+#
+#  PCF8575 thermostat input pin map:
+#    0-3: Zone 0  (Y1, W, G, OPT)   Floor 1
+#    4-7: Zone 1  (Y1, W, G, OPT)   Floor 2
+#    8-11: Zone 2 (Y1, W, G, OPT)   Floor 2
+#   12-15: Zone 3 (Y1, W, G, OPT)   Floor 2
+# ===========================================================
+
+# [ADDED] — substitutions block; fixes $friendly_name references
+substitutions:
+  device_name:    hvac-multi-z
+  friendly_name:  HVAC_MULTI_Z
+  faikin_ac1:     "Faikout/AC1"     # Faikin device name for Floor 1 Daikin
+  faikin_ac2:     "Faikout/AC2"     # Faikin device name for Floor 2 Daikin
+  mqtt_prefix:    "HVAC_MULTI_Z"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  min_version: 2025.5.0
+  name_add_mac_suffix: false
+  comment: "multi-zone HVAC controller with timed dampers, PWM fan, and BME680 AQI"
+  on_boot:
+    priority: -100
+    then:
+      - mqtt.publish:
+          topic: ${mqtt_prefix}/status
+          payload: "online"
+          retain: true
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Hvac-Control Fallback Hotspot"
+    password: !secret ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  auth:
+    username: !secret web_server_username
+    password: !secret web_server_password
+  version: 2
+
+# ─── MQTT ────────────────────────────────────────────────────────────────────
+mqtt:
+  broker: !secret mqtt_broker
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  topic_prefix: ${mqtt_prefix}
+  birth_message:
+    topic: ${mqtt_prefix}/status
+    payload: online
+    retain: true
+  will_message:
+    topic: ${mqtt_prefix}/status
+    payload: offline
+    retain: true
+
+  on_message:
+
+    # ── Floor 1 heating mode: heat_pump | gas | combined ──
+    - topic: ${mqtt_prefix}/floor1/heat_mode/set
+      then:
+        - select.set:
+            id: sel_f1_heat_mode
+            option: !lambda "return x;"
+
+    # ── Floor 1 scene preset ──────────────────────────────
+    - topic: ${mqtt_prefix}/floor1/scene/set
+      then:
+        - lambda: |-
+            std::string s = x;
+            float temp = 21.0f;
+            std::string mode = "H";
+            std::string fan  = "A";
+            if      (s == "morning") { temp = 21.0f; mode = "H"; }
+            else if (s == "night")   { temp = 18.0f; mode = "H"; fan = "1"; }
+            else if (s == "away")    { temp = 15.0f; mode = "H"; }
+            else if (s == "eco")     { temp = 19.0f; mode = "H"; fan = "1"; }
+            else if (s == "comfort") { temp = 22.0f; mode = "H";
+                                      id(sel_f1_heat_mode).make_call().set_option("combined").perform(); }
+            else if (s == "cool")    { temp = 24.0f; mode = "C"; }
+            // Publish to Faikin AC1
+            auto doc = std::string("{\"power\":true,\"mode\":\"") + mode +
+                      "\",\"temp\":" + to_string((int)temp) +
+                      ",\"fan\":\"" + fan + "\"}";
+            mqtt::global_mqtt_client->publish("${faikin_ac1}/command", doc);
+
+    # ── Floor 1 direct Faikin passthrough ─────────────────
+    - topic: ${mqtt_prefix}/floor1/ac/command
+      then:
+        - lambda: |-
+            mqtt::global_mqtt_client->publish("${faikin_ac1}/command", x);
+
+    - topic: ${mqtt_prefix}/floor2/ac/command
+      then:
+        - lambda: |-
+            mqtt::global_mqtt_client->publish("${faikin_ac2}/command", x);
+
+    # ── Floor 2 damper direct position override ───────────
+    - topic: ${mqtt_prefix}/floor2/zone1/damper/position/set
+      then:
+        - cover.control:
+            id: HVAC_DAMPER_1
+            position: !lambda "return atof(x.c_str()) / 100.0f;"
+
+    - topic: ${mqtt_prefix}/floor2/zone2/damper/position/set
+      then:
+        - cover.control:
+            id: HVAC_DAMPER_2
+            position: !lambda "return atof(x.c_str()) / 100.0f;"
+
+    - topic: ${mqtt_prefix}/floor2/zone3/damper/position/set
+      then:
+        - cover.control:
+            id: HVAC_DAMPER_3
+            position: !lambda "return atof(x.c_str()) / 100.0f;"
+
+    # ── System-wide commands ──────────────────────────────
+    - topic: ${mqtt_prefix}/command
+      then:
+        - lambda: |-
+            if (x == "all_off") {
+              // No damper on Floor 1 — dampers 1-3 only (Floor 2)
+              id(HVAC_DAMPER_1).make_call().set_command_close().perform();
+              id(HVAC_DAMPER_2).make_call().set_command_close().perform();
+              id(HVAC_DAMPER_3).make_call().set_command_close().perform();
+              id(furnace_W).turn_off();
+              id(furnace_G).turn_off();
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":false}");
+              mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":false}");
+            } else if (x == "away") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"H\",\"temp\":15}");
+              mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\",\"temp\":15}");
+              id(furnace_W).turn_off();
+              id(furnace_G).turn_off();
+            } else if (x == "night") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"H\",\"temp\":18,\"fan\":\"3\"}");
+              mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\",\"temp\":18,\"fan\":\"3\"}");
+            }
+
+    # ── Receive Faikin AC state and re-publish ──
+    - topic: "${faikin_ac1}/state"
+      then:
+        - mqtt.publish:
+            topic: ${mqtt_prefix}/floor1/ac/state
+            payload: !lambda "return x;"
+            retain: true
+
+    - topic: "${faikin_ac2}/state"
+      then:
+        - mqtt.publish:
+            topic: ${mqtt_prefix}/floor2/ac/state
+            payload: !lambda "return x;"
+            retain: true
+
+# ─── I2C ─────────────────────────────────────────────────────────────────────
+i2c:
+  - id: bus_a
+    sda: 8
+    scl: 9
+    scan: true
+    frequency: 200kHz
+  # !! CLAUDE DO NOT TOUCH !! Must ask first — intentional spare bus; future use
+  - id: bus_b
+    sda: 16
+    scl: 15
+    scan: true
+    frequency: 200kHz
+
+# ─── TCA9548A I2C multiplexer ────────────────────────────────────────────────
+tca9548a:
+  - address: 0x70
+    id: multiplex0
+    i2c_id: bus_a
+    channels:
+      - bus_id: multiplex0channel0
+        channel: 0
+      - bus_id: multiplex0channel1
+        channel: 1
+      - bus_id: multiplex0channel2
+        channel: 2
+      - bus_id: multiplex0channel3
+        channel: 3
+      # !! CLAUDE DO NOT TOUCH !! Must ask first — channels 4+5 reserved/future use
+      - bus_id: multiplex0channel4
+        channel: 4
+      - bus_id: multiplex0channel5
+        channel: 5
+
+# ─── One-Wire (DS2484 I2C-to-1-Wire bridge) ──────────────────────────────────
+one_wire:
+  - platform: ds2484
+    i2c_id: bus_a
+
+# ─── OUTPUTS ─────────────────────────────────────────────────────────────────
+output:
+  - platform: ledc
+    pin: GPIO4
+    frequency: 4500 Hz
+    id: fanhub_pwm0
+    inverted: true
+    min_power: 0%
+    max_power: 60%
+
+  - platform: ledc
+    pin: GPIO5
+    frequency: 4500 Hz
+    id: fanhub_pwm1
+    inverted: true
+    min_power: 0%
+    max_power: 60%
+
+  - platform: ledc
+    pin: GPIO6
+    frequency: 4500 Hz
+    id: fanhub_pwm2
+    inverted: true
+    min_power: 0%
+    max_power: 60%
+
+  - platform: ledc
+    pin: GPIO7
+    frequency: 4500 Hz
+    id: fanhub_pwm3
+    inverted: true
+    min_power: 0%
+    max_power: 60%
+
+  - platform: ledc
+    pin: GPIO47
+    id: led_status_rgb
+    frequency: 4500 Hz
+    inverted: true
+    min_power: 0%
+    max_power: 60%
+
+# ─── FANS ────────────────────────────────────────────────────────────────────
+# fan 0 AND 1 INSTALLED FOR 2ND FLOOR ONLY
+# fan 2,3 spare channels
+
+fan:
+  - platform: speed
+    output: fanhub_pwm0
+    name: FAN_0
+    id: fan0
+    icon: "mdi:fan"
+    on_turn_on:
+      - output.set_level:
+          id: fanhub_pwm0
+          level: !lambda "return id(fan_speed_override0).state / 100.0;"
+    on_turn_off:
+      - delay: 0.1s
+      - output.set_level:
+          id: fanhub_pwm0
+          level: 0.0
+
+  - platform: speed
+    output: fanhub_pwm1
+    name: FAN_1
+    id: fan1
+    icon: "mdi:fan"
+    on_turn_on:
+      - output.set_level:
+          id: fanhub_pwm1
+          level: !lambda "return id(fan_speed_override1).state / 100.0;"
+    on_turn_off:
+      - delay: 0.1s
+      - output.set_level:
+          id: fanhub_pwm1
+          level: 0.0
+
+  - platform: speed
+    output: fanhub_pwm2
+    name: FAN_2
+    id: fan2
+    icon: "mdi:fan"
+    on_turn_on:
+      - output.set_level:
+          id: fanhub_pwm2
+          level: !lambda "return id(fan_speed_override2).state / 100.0;"
+    on_turn_off:
+      - delay: 1s
+      - output.set_level:
+          id: fanhub_pwm2
+          level: 0.0
+
+  - platform: speed
+    output: fanhub_pwm3
+    name: FAN_3
+    id: fan3
+    icon: "mdi:fan"
+    on_turn_on:
+      - output.set_level:
+          id: fanhub_pwm3
+          level: !lambda "return id(fan_speed_override3).state / 100.0;"
+    on_turn_off:
+      - delay: 1s
+      - output.set_level:
+          id: fanhub_pwm3
+          level: 0.0
+
+# ─── NUMBER sliders ───────────────────────────────────────────────────────────
+number:
+  - platform: template
+    name: "Fan Speed Override 0"
+    id: fan_speed_override0
+    max_value: 100.0
+    min_value: 0.0
+    step: 2
+    optimistic: true
+    mode: slider
+    on_value:
+      then:
+        - if:
+            condition:
+              fan.is_on: fan0
+            then:
+              - output.set_level:
+                  id: fanhub_pwm0
+                  level: !lambda "return x / 100.0;"
+
+  - platform: template
+    name: "Fan Speed Override 1"
+    id: fan_speed_override1
+    max_value: 100.0
+    min_value: 0.0
+    step: 2
+    optimistic: true
+    mode: slider
+    on_value:
+      then:
+        - if:
+            condition:
+              fan.is_on: fan1
+            then:
+              - output.set_level:
+                  id: fanhub_pwm1
+                  level: !lambda "return x / 100.0;"
+
+  - platform: template
+    name: "Fan Speed Override 2"
+    id: fan_speed_override2
+    max_value: 100.0
+    min_value: 0.0
+    step: 2
+    optimistic: true
+    mode: slider
+    on_value:
+      then:
+        - if:
+            condition:
+              fan.is_on: fan2
+            then:
+              - output.set_level:
+                  id: fanhub_pwm2
+                  level: !lambda "return x / 100.0;"
+
+  - platform: template
+    name: "Fan Speed Override 3"
+    id: fan_speed_override3
+    max_value: 100.0
+    min_value: 0.0
+    step: 2
+    optimistic: true
+    mode: slider
+    on_value:
+      then:
+        - if:
+            condition:
+              fan.is_on: fan3
+            then:
+              - output.set_level:
+                  id: fanhub_pwm3
+                  level: !lambda "return x / 100.0;"
+
+# ─── I2C GPIO EXPANDERS ───────────────────────────────────────────────────────
+pca9554:
+  - id: relay4_4_1
+    address: 0x38
+    i2c_id: bus_a
+    # !! CLAUDE DO NOT TOUCH !! pin assignments confirmed correct by owner
+    # pins 0–3: furnace relays (Y-BLOWER, W, G, spare)  ← confirmed
+    # (header previously said 4-6; pins 0-3 is the correct wiring)
+
+pcf8574:
+  - id: pcf8574_hub
+    i2c_id: bus_a
+    address: 0x21
+    pcf8575: false
+
+  - id: pcf8575_hub
+    i2c_id: bus_a
+    address: 0x20
+    pcf8575: true
+
+# ─── SWITCHES ────────────────────────────────────────────────────────────────
+switch:
+
+  # ── SSR outputs via PCF8574 (pcf8574_hub 0x21) ───────────────────────────
+  # 2 relays per damper: CLOSE relay + OPEN relay (proportional, bidirectional)
+  # Floor 1: SSR_0 + SSR_1 in use (no duct damper; wired for other purpose)
+  # Zone 1: SSR_2 (CLOSE) + SSR_3 (OPEN)
+  # Zone 2: SSR_4 (CLOSE) + SSR_5 (OPEN)
+  # Zone 3: SSR_6 (CLOSE) + SSR_7 (OPEN)
+
+  # !! CLAUDE DO NOT TOUCH !! Must ask first — SSR_0/SSR_1 in use on Floor 1
+  - platform: gpio
+    name: "Floor 1 SSR_0"
+    id: SSR_0
+    pin: { pcf8574: pcf8574_hub, number: 0, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Floor 1 SSR_1"
+    id: SSR_1
+    pin: { pcf8574: pcf8574_hub, number: 1, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Zone 1 Damper CLOSE"
+    id: SSR_2
+    pin: { pcf8574: pcf8574_hub, number: 2, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Zone 1 Damper OPEN"
+    id: SSR_3
+    pin: { pcf8574: pcf8574_hub, number: 3, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Zone 2 Damper CLOSE"
+    id: SSR_4
+    pin: { pcf8574: pcf8574_hub, number: 4, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Zone 2 Damper OPEN"
+    id: SSR_5
+    pin: { pcf8574: pcf8574_hub, number: 5, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Zone 3 Damper CLOSE"
+    id: SSR_6
+    pin: { pcf8574: pcf8574_hub, number: 6, mode: { output: true }, inverted: true }
+
+  - platform: gpio
+    name: "Zone 3 Damper OPEN"
+    id: SSR_7
+    pin: { pcf8574: pcf8574_hub, number: 7, mode: { output: true }, inverted: true }
+
+  # ── Gas furnace relays — relay4_4_1 (PCA9554 0x38) pins 0–3 ────────────────
+  # !! CLAUDE DO NOT TOUCH !! Pin assignments confirmed correct by owner (item #6)
+  # Pins 0-3: furnace (Y-BLOWER=0, W=1, G=2, spare=3)
+  # Wire relay NO contacts to furnace 24 VAC thermostat terminals.
+  # Relay COM to furnace C (common/24 VAC return).
+  - platform: gpio
+    name: "Furnace spare"
+    id: furnace_spare
+    pin: { pca9554: relay4_4_1, number: 3, mode: { output: true }, inverted: true }
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/spare/state", payload: "on", retain: true }
+    on_turn_off:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/spare/state", payload: "off", retain: true }
+
+  - platform: gpio
+    name: "Furnace blower FAN"
+    id: furnace_G
+    pin: { pca9554: relay4_4_1, number: 2, mode: { output: true }, inverted: true }
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/g/state", payload: "on", retain: true }
+    on_turn_off:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/g/state", payload: "off", retain: true }
+
+  - platform: gpio
+    name: "Furnace W (Heat)"
+    id: furnace_W
+    pin: { pca9554: relay4_4_1, number: 1, mode: { output: true }, inverted: true }
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/w1/state", payload: "on", retain: true }
+    on_turn_off:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/w1/state", payload: "off", retain: true }
+
+  - platform: gpio
+    name: "Furnace Y-BLOWER"
+    id: furnace_Y_BLOWER
+    pin: { pca9554: relay4_4_1, number: 0, mode: { output: true }, inverted: true }
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/y-blower/state", payload: "on", retain: true }
+    on_turn_off:
+      - mqtt.publish: { topic: "${mqtt_prefix}/floor1/furnace/y-blower/state", payload: "off", retain: true }
+
+# ─── SELECT — Floor 1 Heating Mode ───────────────────────────────────────────
+select:
+  - platform: template
+    id: sel_f1_heat_mode
+    name: "Floor 1 Heating Mode"
+    options: [ "heat_pump", "gas", "combined" ]
+    initial_option: "heat_pump"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - lambda: |-
+            if (x == "heat_pump") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"H\"}");
+              id(furnace_W).turn_off();  // FIX #1: was furnace_W called twice; second call is now furnace_G
+              id(furnace_G).turn_off();
+            } else if (x == "gas") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":false,\"mode\":\"F\"}");
+              id(furnace_G).turn_on();
+              id(furnace_W).turn_on();
+            } else if (x == "combined") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"H\"}");
+              id(furnace_G).turn_on();
+              id(furnace_W).turn_on();
+            }
+        - mqtt.publish:
+            topic: ${mqtt_prefix}/floor1/heat_mode/state
+            payload: !lambda "return x;"
+            retain: true
+
+# ─── COVERS — Zone Dampers (proportional, bidirectional, 2 relays each) ──────
+#  Each damper motor has separate OPEN and CLOSE windings.
+#  time_based platform tracks position automatically by timing partial travel.
+#
+#  ⚠ Never energise OPEN and CLOSE simultaneously.
+#
+#  Floor 1 Zone 0: NO physical damper installed.
+#  Damper 1: SSR_2 (CLOSE), SSR_3 (OPEN)  — Floor 2 Zone 1
+#  Damper 2: SSR_4 (CLOSE), SSR_5 (OPEN)  — Floor 2 Zone 2
+#  Damper 3: SSR_6 (CLOSE), SSR_7 (OPEN)  — Floor 2 Zone 3
+
+cover:
+  - platform: time_based
+    name: "HVAC Damper 1"
+    id: HVAC_DAMPER_1
+    device_class: damper
+    assumed_state: true
+    open_action:
+      - switch.turn_off: SSR_2
+      - switch.turn_on:  SSR_3
+    close_action:
+      - switch.turn_off: SSR_3
+      - switch.turn_on:  SSR_2
+    stop_action:
+      - switch.turn_off: SSR_2
+      - switch.turn_off: SSR_3
+    open_duration: 90s
+    close_duration: 90s
+    on_idle:
+      - mqtt.publish_json:
+          topic: ${mqtt_prefix}/floor2/zone1/damper/state
+          retain: true
+          payload: |-
+            root["position"] = (int)(id(HVAC_DAMPER_1).position * 100);
+            auto s = id(HVAC_DAMPER_1).current_operation;
+            root["state"] = (s == esphome::cover::COVER_OPERATION_OPENING) ? "opening" :
+                            (s == esphome::cover::COVER_OPERATION_CLOSING) ? "closing" : "stopped";
+
+  - platform: time_based
+    name: "HVAC Damper 2"
+    id: HVAC_DAMPER_2
+    device_class: damper
+    assumed_state: true
+    open_action:
+      - switch.turn_off: SSR_4
+      - switch.turn_on:  SSR_5
+    close_action:
+      - switch.turn_off: SSR_5
+      - switch.turn_on:  SSR_4
+    stop_action:
+      - switch.turn_off: SSR_4
+      - switch.turn_off: SSR_5
+    open_duration: 90s
+    close_duration: 90s
+    on_idle:
+      - mqtt.publish_json:
+          topic: ${mqtt_prefix}/floor2/zone2/damper/state
+          retain: true
+          payload: |-
+            root["position"] = (int)(id(HVAC_DAMPER_2).position * 100);
+            auto s = id(HVAC_DAMPER_2).current_operation;
+            root["state"] = (s == esphome::cover::COVER_OPERATION_OPENING) ? "opening" :
+                            (s == esphome::cover::COVER_OPERATION_CLOSING) ? "closing" : "stopped";
+
+  - platform: time_based
+    name: "HVAC Damper 3"
+    id: HVAC_DAMPER_3
+    device_class: damper
+    assumed_state: true
+    open_action:
+      - switch.turn_off: SSR_6
+      - switch.turn_on:  SSR_7
+    close_action:
+      - switch.turn_off: SSR_7
+      - switch.turn_on:  SSR_6
+    stop_action:
+      - switch.turn_off: SSR_6
+      - switch.turn_off: SSR_7
+    open_duration: 90s
+    close_duration: 90s
+    on_idle:
+      - mqtt.publish_json:
+          topic: ${mqtt_prefix}/floor2/zone3/damper/state
+          retain: true
+          payload: |-
+            root["position"] = (int)(id(HVAC_DAMPER_3).position * 100);
+            auto s = id(HVAC_DAMPER_3).current_operation;
+            root["state"] = (s == esphome::cover::COVER_OPERATION_OPENING) ? "opening" :
+                            (s == esphome::cover::COVER_OPERATION_CLOSING) ? "closing" : "stopped";
+
+# ─── SCRIPT — Floor 2 fan auto-speed ─────────────────────────────────────────
+script:
+  - id: update_f2_fans
+    then:
+      - lambda: |-
+          bool z1 = id(HVAC_DAMPER_1).position > 0.05f;
+          bool z2 = id(HVAC_DAMPER_2).position > 0.05f;
+          bool z3 = id(HVAC_DAMPER_3).position > 0.05f;
+
+          // fan0 serves zones 1+2; fan1 serves zones 2+3
+          int f0_cnt = (z1 ? 1 : 0) + (z2 ? 1 : 0);
+          int f1_cnt = (z2 ? 1 : 0) + (z3 ? 1 : 0);
+
+          if (f0_cnt == 0) {
+            id(fan0).make_call().set_state(false).perform();
+          } else {
+            id(fan0).make_call().set_state(true).set_speed(f0_cnt == 1 ? 40 : 70).perform();
+          }
+          if (f1_cnt == 0) {
+            id(fan1).make_call().set_state(false).perform();
+          } else {
+            id(fan1).make_call().set_state(true).set_speed(f1_cnt == 1 ? 40 : 70).perform();
+          }
+
+          bool any = z1 || z2 || z3;
+          if (!any)
+            mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":false}");
+
+# ─── SENSORS ─────────────────────────────────────────────────────────────────
+sensor:
+  # ── DS18B20 zone temperatures ─────────────────────────────────────────────
+  - platform: dallas_temp
+    address: 0x6100000075e91f28
+    name: "Zone 1 Duct Temperature"
+    id: z1_duct_temp
+    resolution: 12
+    update_interval: 10s
+    on_value:
+      - mqtt.publish:
+          topic: ${mqtt_prefix}/floor2/zone1/temperature
+          payload: !lambda "return to_string(x);"
+
+  - platform: dallas_temp
+    address: 0x00000000000002
+    name: "Zone 2 Duct Temperature"
+    id: z2_duct_temp
+    resolution: 12
+    update_interval: 10s
+    on_value:
+      - mqtt.publish:
+          topic: ${mqtt_prefix}/floor2/zone2/temperature
+          payload: !lambda "return to_string(x);"
+
+  - platform: dallas_temp
+    address: 0x00000000000003
+    name: "Zone 3 Duct Temperature"
+    id: z3_duct_temp
+    resolution: 12
+    update_interval: 10s
+    on_value:
+      - mqtt.publish:
+          topic: ${mqtt_prefix}/floor2/zone3/temperature
+          payload: !lambda "return to_string(x);"
+
+  - platform: dallas_temp
+    address: 0x00000000000004
+    name: "Zone 0 Duct Temperature"
+    id: z0_duct_temp
+    resolution: 12
+    update_interval: 10s
+    on_value:
+      - mqtt.publish:
+          topic: ${mqtt_prefix}/floor1/zone0/temperature
+          payload: !lambda "return to_string(x);"
+
+  # ── BMP085 duct pressure/temp via TCA9548A ────────────────────────────────
+  - platform: bmp085
+    i2c_id: multiplex0channel0
+    address: 0x76
+    temperature: { name: "Duct 1 Temp" }
+    pressure:    { name: "Duct 1 Pressure" }
+    update_interval: 30s
+
+  - platform: bmp085
+    i2c_id: multiplex0channel1
+    address: 0x76
+    temperature: { name: "Duct 2 Temp" }
+    pressure:    { name: "Duct 2 Pressure" }
+    update_interval: 30s
+
+  - platform: bmp085
+    i2c_id: multiplex0channel2
+    address: 0x76
+    temperature: { name: "Duct 3 Temp" }
+    pressure:    { name: "Duct 3 Pressure" }
+    update_interval: 30s
+
+  - platform: bmp085
+    i2c_id: multiplex0channel3
+    address: 0x76
+    temperature: { name: "Duct 4 Temp" }
+    pressure:    { name: "Duct 4 Pressure" }
+    update_interval: 30s
+
+  # ── BME680 AQI ──────────────────────────────────────────────────────────────
+  - platform: bme680
+    i2c_id: bus_a
+    address: 0x77
+    update_interval: 10s
+    temperature:
+      name: "AQI Sensor Temperature"
+      id: bme680_temp
+      accuracy_decimals: 1
+    humidity:
+      name: "AQI Sensor Humidity"
+      id: bme680_humidity
+      accuracy_decimals: 1
+    pressure:
+      name: "AQI Sensor Pressure"
+      accuracy_decimals: 1
+    gas_resistance:
+      name: "Gas Resistance"
+      id: bme680_gas
+      accuracy_decimals: 0
+      unit_of_measurement: "Ω"
+      icon: "mdi:chemical-weapon"
+
+  # ── Calculated IAQ ────────────────────────────────────────────────────────
+  - platform: template
+    name: "IAQ Index"
+    id: iaq_index
+    icon: "mdi:air-filter"
+    accuracy_decimals: 0
+    unit_of_measurement: "IAQ"
+    update_interval: 10s
+    lambda: |-
+      if (!id(bme680_gas).has_state() || !id(bme680_humidity).has_state())
+        return NAN;
+      float gas  = id(bme680_gas).state;
+      float hum  = id(bme680_humidity).state;
+      const float gas_ref = 250000.0f;
+      float gas_score = gas / (gas + gas_ref) * 2.0f;
+      if (gas_score > 1.0f) gas_score = 1.0f;
+      float hum_score = (hum < 40.0f) ? (hum / 40.0f) : (1.0f - ((hum - 40.0f) / 60.0f));
+      hum_score = std::max(0.0f, std::min(1.0f, hum_score));
+      float combined = (gas_score * 0.75f) + (hum_score * 0.25f);
+      float iaq = std::max(0.0f, std::min(500.0f, (1.0f - combined) * 500.0f));
+      std::string cat;
+      if      (iaq <= 50)  cat = "Excellent";
+      else if (iaq <= 100) cat = "Good";
+      else if (iaq <= 150) cat = "Lightly Polluted";
+      else if (iaq <= 200) cat = "Moderately Polluted";
+      else if (iaq <= 250) cat = "Heavily Polluted";
+      else if (iaq <= 350) cat = "Severely Polluted";
+      else                 cat = "Extremely Polluted";
+      id(iaq_category).publish_state(cat);
+      mqtt::global_mqtt_client->publish("${mqtt_prefix}/aqi/state", to_string((int)iaq));
+      if (iaq > 150) {
+        id(fan0).make_call().set_state(true).set_speed(100).perform();
+      }
+      return iaq;
+
+  # ── Diagnostics ──────────────────────────────────────────────────────────
+  - platform: wifi_signal
+    name: "HVAC Controller WiFi Signal"
+    update_interval: 60s
+
+# ─── BINARY SENSORS ──────────────────────────────────────────────────────────
+binary_sensor:
+  # ── ZONE 0 thermostat inputs (Floor 1) — PCF8575 pins 0–3 ───────────────
+  - platform: gpio
+    name: "THERM_0_G"
+    id: ZONE_0_G
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 2, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - switch.turn_on: furnace_G
+        - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "fan" }
+        - light.turn_on: { id: RGB_LED, brightness: 60%, red: 0%, green: 80%, blue: 0%, effect: pulse }
+    on_release:
+      then:
+        - switch.turn_off: furnace_G
+        - light.turn_off: { id: RGB_LED }
+        - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "idle" }
+
+  - platform: gpio
+    name: "THERM_0_Y1"
+    id: ZONE_0_Y1
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 0, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - switch.turn_on: furnace_Y_BLOWER
+        - light.turn_on: { id: RGB_LED, brightness: 60%, red: 0%, green: 0%, blue: 80%, effect: pulse }
+        # - cover.control: { id: HVAC_DAMPER_0, position: 0.5 }
+        - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "cool" }  # FIX #3: was ${mqtt_prefix}//mode
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"C\"}");
+    on_release:
+      then:
+        - switch.turn_off: furnace_Y_BLOWER
+        - light.turn_off: { id: RGB_LED }
+        # - cover.close: HVAC_DAMPER_0
+        - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "idle" }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":false,\"mode\":\"C\"}");
+
+  - platform: gpio
+    name: "THERM_0_W"
+    id: ZONE_0_W
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 1, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - lambda: |-
+            if ( id(sel_f1_heat_mode).current_option() == "heat_pump") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"H\"}");
+              id(furnace_Y_BLOWER).turn_on();
+            } else if ( id(sel_f1_heat_mode).current_option() == "gas") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":false,\"mode\":\"F\"}");
+              id(furnace_W).turn_on();
+            } else if ( id(sel_f1_heat_mode).current_option() == "combined") {
+              mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":true,\"mode\":\"H\"}");
+              id(furnace_W).turn_on();
+            };
+        - light.turn_on: { id: RGB_LED, brightness: 60%, red: 80%, green: 0%, blue: 10%, effect: pulse }
+        - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "heat" }
+    on_release:
+      then:
+        - switch.turn_off: furnace_W
+        - light.turn_off: { id: RGB_LED }
+        - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "idle" }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":false,\"mode\":\"H\"}");  # FIX #2: was faikin_ac2
+
+  - platform: gpio
+    name: "THERM_0_OPT"
+    id: ZONE_0_OPT
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 3, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - switch.turn_on: furnace_spare
+        - light.turn_on: { id: RGB_LED, brightness: 60%, red: 70%, green: 30%, blue: 2%, effect: pulse }
+    on_release:
+      then:
+        - switch.turn_off: furnace_spare
+        - light.turn_off: { id: RGB_LED }
+
+  # ── ZONE 1 thermostat inputs (Floor 2) — PCF8575 pins 4–7 ───────────────
+  - platform: gpio
+    name: "THERM_1_Y1"
+    id: ZONE_1_Y1
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 4, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_1, position: 1.0 }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"C\"}");
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_1
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_1_W"
+    id: ZONE_1_W
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 5, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_1, position: 1.0 }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\"}");
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_1
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_1_G"
+    id: ZONE_1_G
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 6, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_1, position: 1.0 }
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_1
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_1_OPT"
+    id: ZONE_1_OPT
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 7, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+
+  # ── ZONE 2 thermostat inputs (Floor 2) — PCF8575 pins 8–11 ──────────────
+  - platform: gpio
+    name: "THERM_2_Y1"
+    id: ZONE_2_Y1
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 8, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_2, position: 1.0 }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"C\"}");
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_2
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_2_W"
+    id: ZONE_2_W
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 9, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_2, position: 1.0 }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\"}");
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_2
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_2_G"
+    id: ZONE_2_G
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 10, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_2, position: 1.0 }
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_2
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_2_OPT"
+    id: ZONE_2_OPT
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 11, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+
+  # ── ZONE 3 thermostat inputs (Floor 2) — PCF8575 pins 12–15 ─────────────
+  - platform: gpio
+    name: "THERM_3_Y1"
+    id: ZONE_3_Y1
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 12, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_3, position: 1.0 }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"C\"}");
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_3
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_3_W"
+    id: ZONE_3_W
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 13, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_3, position: 1.0 }
+        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\"}");
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_3
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_3_G"
+    id: ZONE_3_G
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 14, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    on_press:
+      then:
+        - cover.control: { id: HVAC_DAMPER_3, position: 1.0 }
+        - script.execute: update_f2_fans
+    on_release:
+      then:
+        - cover.close: HVAC_DAMPER_3
+        - script.execute: update_f2_fans
+
+  - platform: gpio
+    name: "THERM_3_OPT"
+    id: ZONE_3_OPT
+    trigger_on_initial_state: true
+    pin: { pcf8574: pcf8575_hub, number: 15, mode: { input: true }, inverted: false }
+    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+
+  # ── AQI alerts ──────────────────────────────────────────────────────────
+  - platform: template
+    name: "Air Quality Warning"
+    id: aqi_warning
+    device_class: problem
+    icon: "mdi:air-filter"
+    lambda: "return id(iaq_index).has_state() && id(iaq_index).state > 150;"
+
+  - platform: template
+    name: "Air Quality Alert"
+    id: aqi_alert
+    device_class: problem
+    icon: "mdi:smog"
+    lambda: "return id(iaq_index).has_state() && id(iaq_index).state > 200;"
+
+  - platform: template
+    name: "Air Quality Critical"
+    id: aqi_critical
+    device_class: problem
+    icon: "mdi:skull-crossbones"
+    lambda: "return id(iaq_index).has_state() && id(iaq_index).state > 300;"
+
+# ─── TEXT SENSORS ─────────────────────────────────────────────────────────────
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "${friendly_name} IP Address"
+
+  - platform: template
+    name: "${friendly_name} Uptime"
+    id: uptime_human
+    icon: mdi:clock-start
+    update_interval: 60s
+    lambda: |-
+      uint32_t s = millis() / 1000;
+      uint32_t d = s / 86400; s %= 86400;
+      uint32_t h = s / 3600;  s %= 3600;
+      uint32_t m = s / 60;    s %= 60;
+      char buf[32];
+      snprintf(buf, sizeof(buf), "%ud %02uh %02um %02us", d, h, m, s);
+      return {buf};
+
+  - platform: template
+    name: "Air Quality Category"
+    id: iaq_category
+    icon: "mdi:leaf"
+    lambda: "return {\"Initializing...\"};"
+
+# ─── TIME ─────────────────────────────────────────────────────────────────────
+time:
+  - platform: sntp
+    id: current_time
+
+# ─── LIGHTS ───────────────────────────────────────────────────────────────────
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: GPIO48
+    num_leds: 1
+    chipset: ws2812
+    id: RGB_LED
+    name: "RGB_LED"
+    effects:
+      - pulse:
+
+  - platform: monochromatic
+    output: led_status_rgb
+    name: "led_status_rgb"
+    effects:
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 0.5s
+          update_interval: 0.5s
+          min_brightness: 0%
+          max_brightness: 100%
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 2s
+          update_interval: 2s
+          min_brightness: 10%
+          max_brightness: 100%
+      - pulse:
+          name: "Asymmetrical Pulse"
+          transition_length:
+            on_length: 1s
+            off_length: 500ms
+          update_interval: 1.5s
+          min_brightness: 0%
+          max_brightness: 100%
