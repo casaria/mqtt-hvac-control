@@ -1498,8 +1498,7 @@ text_sensor:
     icon: "mdi:leaf"
     lambda: "return {\"Initializing...\"};"
 
-# ─── NUMBER ENTITIES — zone weights & duct setpoints ─────────────────────────
-number:
+# ─── NUMBER ENTITIES — zone weights & duct setpoints (merged into number: above)
   # Zone priority weights (1–5). Zone 1 = Master Bedroom, default weight 2.
   - platform: template
     name: "Zone 1 Priority Weight"
