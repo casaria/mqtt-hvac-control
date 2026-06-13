@@ -1,0 +1,24 @@
+# Secrets — never commit credentials
+config/secrets.yaml
+*.env
+.env.*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Home Assistant generated files
+home-assistant.log
+home-assistant_v2.db
+.storage/
+
+# Python (if any helper scripts added later)
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/

@@ -1,0 +1,89 @@
+# Fault and Threshold Alerts
+# Publishes notifications when conditions go out of range.
+
+automations:
+
+  - id: alert_hvac_offline
+    alias: "Alert – HVAC unit offline (LWT)"
+    description: >
+      Triggered when a unit stops publishing its Last Will and Testament
+      availability message — indicates a controller crash or power loss.
+    trigger:
+      - platform: mqtt
+        topic: "hvac/+/availability"
+        payload: "offline"
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "⚠️ HVAC Offline"
+          message: >
+            Unit {{ trigger.topic.split('/')[1] }} has gone offline.
+            Check power and network connectivity.
+
+  - id: alert_high_humidity
+    alias: "Alert – High humidity (>70 %RH)"
+    trigger:
+      - platform: mqtt
+        topic: "hvac/+/humidity"
+        value_template: "{{ value | float }}"
+        above: 70
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "💧 High Humidity"
+          message: >
+            Humidity in zone {{ trigger.topic.split('/')[1] }} is
+            {{ trigger.payload }}% — consider switching to dry mode.
+      - service: mqtt.publish
+        data:
+          topic: "hvac/{{ trigger.topic.split('/')[1] }}/mode/set"
+          payload: "dry"
+
+  - id: alert_temperature_runaway
+    alias: "Alert – Temperature runaway (>32 °C)"
+    description: >
+      Emergency alert if ambient temperature exceeds 32 °C despite
+      cooling being active — may indicate a unit fault or open window.
+    trigger:
+      - platform: mqtt
+        topic: "hvac/+/temperature"
+        value_template: "{{ value | float }}"
+        above: 32
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "🔥 Temperature Runaway"
+          message: >
+            Zone {{ trigger.topic.split('/')[1] }} temperature is
+            {{ trigger.payload }}°C. Check the unit immediately.
+      - service: mqtt.publish
+        data:
+          topic: "hvac/{{ trigger.topic.split('/')[1] }}/fan/set"
+          payload: "high"
+
+  - id: alert_freeze_protection
+    alias: "Alert – Freeze protection (<5 °C)"
+    description: >
+      If temperature drops below 5 °C (e.g. after a power cut in winter),
+      force heating to prevent pipe damage.
+    trigger:
+      - platform: mqtt
+        topic: "hvac/+/temperature"
+        value_template: "{{ value | float }}"
+        below: 5
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "❄️ Freeze Protection"
+          message: >
+            Zone {{ trigger.topic.split('/')[1] }} is {{ trigger.payload }}°C.
+            Activating emergency heat.
+      - service: mqtt.publish
+        data:
+          topic: "hvac/{{ trigger.topic.split('/')[1] }}/mode/set"
+          payload: "heat"
+      - service: mqtt.publish
+        data:
+          topic: "hvac/{{ trigger.topic.split('/')[1] }}/setpoint/set"
+          payload: "18.0"
+          retain: true

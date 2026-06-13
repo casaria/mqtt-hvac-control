@@ -1,0 +1,68 @@
+# Presence-Aware Automations
+# Manages away mode and whole-home setback based on occupancy.
+
+input_boolean:
+  away_mode:
+    name: Away Mode
+    icon: mdi:home-export-outline
+
+automations:
+
+  - id: activate_away_mode
+    alias: "Presence – Activate away mode"
+    description: >
+      Set away mode when all tracked devices leave home network / GPS zone.
+    trigger:
+      - platform: state
+        entity_id: group.all_persons
+        to: "not_home"
+        for:
+          minutes: 5
+    action:
+      - service: input_boolean.turn_on
+        entity_id: input_boolean.away_mode
+      # Apply setback to all zones
+      - repeat:
+          for_each: ["zone1", "zone2", "zone3"]
+          sequence:
+            - service: mqtt.publish
+              data:
+                topic: "hvac/{{ repeat.item }}/setpoint/set"
+                payload: "17.0"
+                retain: true
+
+  - id: deactivate_away_mode
+    alias: "Presence – Deactivate away mode"
+    description: Restore comfort setpoints when someone arrives home.
+    trigger:
+      - platform: state
+        entity_id: group.all_persons
+        to: "home"
+    action:
+      - service: input_boolean.turn_off
+        entity_id: input_boolean.away_mode
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "22.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "21.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone3/setpoint/set", payload: "23.0", retain: true }
+
+  - id: guest_mode_disable_setback
+    alias: "Presence – Guest mode (disable auto-setback)"
+    description: >
+      If guest mode is active, skip occupancy-triggered setback so visitors
+      remain comfortable without triggering the away schedule.
+    trigger:
+      - platform: state
+        entity_id: group.all_persons
+        to: "not_home"
+    condition:
+      - condition: state
+        entity_id: input_boolean.guest_mode
+        state: "on"
+    action:
+      - service: system_log.write
+        data:
+          message: "Away trigger suppressed — guest mode is active."
+          level: info

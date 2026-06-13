@@ -1,0 +1,87 @@
+# Thermostat Automations
+# These automations react to MQTT messages and sensor readings to maintain
+# target temperatures. Import into Home Assistant or adapt for Node-RED.
+
+automations:
+
+  # ── Zone 1: Comfort mode on arrival ──────────────────────────────────────
+  - id: zone1_comfort_on_arrival
+    alias: "Zone 1 – Comfort on arrival"
+    description: >
+      When someone arrives home, restore comfort setpoint and switch
+      back to auto mode from setback.
+    trigger:
+      - platform: mqtt
+        topic: sensor/zone1/occupancy
+        payload: "occupied"
+    condition:
+      - condition: state
+        entity_id: input_boolean.away_mode
+        state: "on"
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "hvac/zone1/setpoint/set"
+          payload: "22.0"
+          retain: true
+      - service: mqtt.publish
+        data:
+          topic: "hvac/zone1/mode/set"
+          payload: "auto"
+          retain: true
+
+  # ── Zone 1: Setback on departure ─────────────────────────────────────────
+  - id: zone1_setback_on_departure
+    alias: "Zone 1 – Setback on departure"
+    description: Apply energy-saving setback temperature when zone is empty.
+    trigger:
+      - platform: mqtt
+        topic: sensor/zone1/occupancy
+        payload: "unoccupied"
+        for:
+          minutes: 10          # debounce: must be empty for 10 min
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "hvac/zone1/setpoint/set"
+          payload: "17.0"      # heating setback
+          retain: true
+
+  # ── High temperature protection ──────────────────────────────────────────
+  - id: high_temp_protection
+    alias: "All zones – High temperature protection"
+    description: >
+      If ambient temperature exceeds 29 °C in any zone, force cooling mode
+      regardless of the current schedule.
+    trigger:
+      - platform: mqtt
+        topic: "hvac/+/temperature"
+        value_template: "{{ value | float }}"
+        above: 29.0
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "hvac/{{ trigger.topic.split('/')[1] }}/mode/set"
+          payload: "cool"
+      - service: mqtt.publish
+        data:
+          topic: "hvac/{{ trigger.topic.split('/')[1] }}/setpoint/set"
+          payload: "24.0"
+
+  # ── Fault alert ──────────────────────────────────────────────────────────
+  - id: hvac_fault_alert
+    alias: "HVAC – Fault notification"
+    description: Send a persistent notification when any zone reports a fault.
+    trigger:
+      - platform: mqtt
+        topic: "hvac/+/status"
+        payload: "fault"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "HVAC Fault"
+          message: >
+            Fault reported on zone
+            {{ trigger.topic.split('/')[1] }}.
+            Check the unit.
+          notification_id: "hvac_fault_{{ trigger.topic.split('/')[1] }}"

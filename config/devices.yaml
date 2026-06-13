@@ -1,0 +1,50 @@
+# HVAC Device and Zone Definitions
+# Add one entry per zone / controllable unit.
+
+zones:
+  - id: zone1
+    name: Living Room
+    type: split_ac            # split_ac | ducted | heat_pump | fan_coil
+    min_temp: 16              # °C
+    max_temp: 30
+    temp_step: 0.5
+    default_setpoint: 22.0
+    default_mode: auto        # heat | cool | auto | off
+    default_fan: auto         # auto | low | medium | high
+    sensors:
+      temperature: sensor/zone1/temperature   # topic supplying ambient temp
+      humidity: sensor/zone1/humidity
+      occupancy: sensor/zone1/occupancy       # optional presence sensor
+
+  - id: zone2
+    name: Master Bedroom
+    type: split_ac
+    min_temp: 16
+    max_temp: 28
+    temp_step: 0.5
+    default_setpoint: 21.0
+    default_mode: auto
+    default_fan: auto
+    sensors:
+      temperature: sensor/zone2/temperature
+      humidity: sensor/zone2/humidity
+      occupancy: sensor/zone2/occupancy
+
+  - id: zone3
+    name: Home Office
+    type: split_ac
+    min_temp: 18
+    max_temp: 28
+    temp_step: 0.5
+    default_setpoint: 23.0
+    default_mode: cool
+    default_fan: low
+    sensors:
+      temperature: sensor/zone3/temperature
+      humidity: ~             # no humidity sensor in this zone
+      occupancy: sensor/zone3/occupancy
+
+# Global setback temperatures used when away / night mode is active
+setback:
+  heating: 17.0
+  cooling: 26.0

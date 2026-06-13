@@ -1,0 +1,22 @@
+# MQTT Broker Connection Settings
+# Edit these values to match your environment.
+
+broker:
+  host: 192.168.1.10       # IP address or hostname of your MQTT broker
+  port: 1883               # Standard MQTT port (use 8883 for TLS)
+  # tls: true              # Uncomment to enable TLS
+  # ca_cert: /path/to/ca.crt
+  username: hvac_user
+  password: changeme       # Consider using environment variables in production
+
+  # Optional: client identity
+  client_id: hvac-controller
+  keepalive: 60            # seconds
+
+  # Quality of Service defaults
+  qos:
+    command: 1             # QoS for set/command topics
+    state: 0               # QoS for state/telemetry topics
+
+  # Retained messages: last known state survives broker restarts
+  retain_state: true

@@ -1,0 +1,101 @@
+# Time-Based Temperature Programs
+# Weekday and weekend schedules for each zone.
+# Adapt trigger times and setpoints to suit your routine.
+
+automations:
+
+  # ══ WEEKDAY SCHEDULE ═════════════════════════════════════════════════════
+
+  - id: weekday_morning_warmup
+    alias: "Weekday – Morning warm-up (06:30)"
+    trigger:
+      - platform: time
+        at: "06:30:00"
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "22.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "21.5", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/mode/set",     payload: "auto",  retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/mode/set",     payload: "auto",  retain: true }
+
+  - id: weekday_daytime_eco
+    alias: "Weekday – Daytime eco (09:00)"
+    description: Office hours setback while home is typically empty.
+    trigger:
+      - platform: time
+        at: "09:00:00"
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+      - condition: state
+        entity_id: input_boolean.away_mode
+        state: "on"
+    action:
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "17.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "17.0", retain: true }
+
+  - id: weekday_evening_comfort
+    alias: "Weekday – Evening comfort (17:30)"
+    trigger:
+      - platform: time
+        at: "17:30:00"
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "22.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "21.0", retain: true }
+
+  - id: weekday_night_setback
+    alias: "Weekday – Night setback (23:00)"
+    trigger:
+      - platform: time
+        at: "23:00:00"
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "19.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "20.0", retain: true }
+
+  # ══ WEEKEND SCHEDULE ═════════════════════════════════════════════════════
+
+  - id: weekend_morning_comfort
+    alias: "Weekend – Morning comfort (08:00)"
+    trigger:
+      - platform: time
+        at: "08:00:00"
+    condition:
+      - condition: time
+        weekday: [sat, sun]
+    action:
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "22.5", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "22.0", retain: true }
+
+  - id: weekend_night_setback
+    alias: "Weekend – Night setback (23:30)"
+    trigger:
+      - platform: time
+        at: "23:30:00"
+    condition:
+      - condition: time
+        weekday: [sat, sun]
+    action:
+      - service: mqtt.publish
+        data: { topic: "hvac/zone1/setpoint/set", payload: "19.0", retain: true }
+      - service: mqtt.publish
+        data: { topic: "hvac/zone2/setpoint/set", payload: "20.0", retain: true }

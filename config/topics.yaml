@@ -1,0 +1,38 @@
+# MQTT Topic Map
+# Defines the topic schema for all HVAC control and telemetry messages.
+# Use {zone} as a placeholder — it is replaced with the zone id at runtime.
+
+topics:
+  control:
+    setpoint_set:   "hvac/{zone}/setpoint/set"    # publish: float (°C)
+    mode_set:       "hvac/{zone}/mode/set"         # publish: heat|cool|auto|off
+    fan_set:        "hvac/{zone}/fan/set"          # publish: auto|low|medium|high
+    swing_set:      "hvac/{zone}/swing/set"        # publish: on|off
+    power_set:      "hvac/{zone}/power/set"        # publish: on|off
+
+  state:
+    setpoint_state: "hvac/{zone}/setpoint/state"  # retained float
+    mode_state:     "hvac/{zone}/mode/state"       # retained string
+    fan_state:      "hvac/{zone}/fan/state"        # retained string
+    swing_state:    "hvac/{zone}/swing/state"
+    power_state:    "hvac/{zone}/power/state"
+
+  telemetry:
+    temperature:    "hvac/{zone}/temperature"      # float, °C
+    humidity:       "hvac/{zone}/humidity"         # float, %RH
+    status:         "hvac/{zone}/status"           # idle|heating|cooling|fault
+    energy_kwh:     "hvac/{zone}/energy"           # float, cumulative kWh
+
+  system:
+    availability:   "hvac/{zone}/availability"    # online|offline (LWT)
+    diagnostics:    "hvac/{zone}/diagnostics"     # JSON blob
+    reset:          "hvac/system/reset"           # payload: "RESET"
+
+# Payload conventions
+payloads:
+  on: "on"
+  off: "off"
+  online: "online"
+  offline: "offline"       # Last Will and Testament value
+  qos: 1
+  retain: true
