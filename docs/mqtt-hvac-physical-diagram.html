@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MQTT HVAC — Physical Architecture</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; padding:20px; background:#0f172a; display:flex; flex-direction:column; align-items:center; font-family:system-ui,sans-serif; }
+    h1 { color:#e2e8f0; font-size:14px; margin-bottom:12px; letter-spacing:0.5px; }
+    svg { max-width:100%; height:auto; border-radius:14px; box-shadow:0 8px 40px rgba(0,0,0,0.5); }
+  </style>
+</head>
+<body>
+<svg viewBox="0 0 1400 960" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif" font-size="12">
+<defs>
+<linearGradient id="g_tablet" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#c4b5fd"/>
+  <stop offset="100%" stop-color="#6d28d9"/>
+</linearGradient>
+<linearGradient id="g_broker" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#c4b5fd"/>
+  <stop offset="100%" stop-color="#6d28d9"/>
+</linearGradient>
+<linearGradient id="g_ctrl" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#93c5fd"/>
+  <stop offset="100%" stop-color="#1d4ed8"/>
+</linearGradient>
+<linearGradient id="g_temp" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#6ee7b7"/>
+  <stop offset="100%" stop-color="#059669"/>
+</linearGradient>
+<linearGradient id="g_press" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#a5f3fc"/>
+  <stop offset="100%" stop-color="#0891b2"/>
+</linearGradient>
+<linearGradient id="g_occ" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#fde68a"/>
+  <stop offset="100%" stop-color="#d97706"/>
+</linearGradient>
+<linearGradient id="g_ac_in" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#67e8f9"/>
+  <stop offset="100%" stop-color="#0e7490"/>
+</linearGradient>
+<linearGradient id="g_ac_out" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#93c5fd"/>
+  <stop offset="100%" stop-color="#1e40af"/>
+</linearGradient>
+<linearGradient id="g_s_damp" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#fcd34d"/>
+  <stop offset="100%" stop-color="#b45309"/>
+</linearGradient>
+<linearGradient id="g_r_damp" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#f9a8d4"/>
+  <stop offset="100%" stop-color="#be185d"/>
+</linearGradient>
+<linearGradient id="g_s_reg" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#fed7aa"/>
+  <stop offset="100%" stop-color="#c2410c"/>
+</linearGradient>
+<linearGradient id="g_r_grille" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0%" stop-color="#fda4af"/>
+  <stop offset="100%" stop-color="#be123c"/>
+</linearGradient>
+<filter id="shadow" x="-10%" y="-10%" width="130%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#00000030"/></filter>
+<marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L0,7 L8,3.5 z" fill="#888"/></marker>
+<marker id="arrS" markerWidth="8" markerHeight="8" refX="1" refY="3.5" orient="auto-start-reverse"><path d="M0,0 L0,7 L8,3.5 z" fill="#888"/></marker>
+<marker id="arr_w" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L0,7 L8,3.5 z" fill="#6d28d9"/></marker>
+<marker id="arr_b" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L0,7 L8,3.5 z" fill="#2563eb"/></marker>
+<marker id="arrS_b" markerWidth="8" markerHeight="8" refX="1" refY="3.5" orient="auto-start-reverse"><path d="M0,0 L0,7 L8,3.5 z" fill="#2563eb"/></marker>
+</defs>
+<rect width="1400" height="960" fill="#0f172a"/>
+<text x="700" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#e2e8f0" letter-spacing="1">MQTT HVAC — Physical Architecture</text>
+<text x="700" y="52" text-anchor="middle" font-size="11" fill="#64748b">3-Zone Split-AC System · ESP32 Controllers · MQTT over Wi-Fi</text>
+<rect x="40" y="70" width="180" height="70" rx="8" fill="url(#g_tablet)" stroke="#4c1d95" stroke-width="2" filter="url(#shadow)"/>
+<rect x="42" y="72" width="176" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="130" y="105" text-anchor="middle" font-size="12" font-weight="700" fill="#ede9fe">Tablet Dashboard</text>
+<text x="130" y="134" text-anchor="middle" font-size="9" fill="#ede9fe" opacity="0.8">Home Assistant UI</text>
+<rect x="580" y="70" width="240" height="70" rx="8" fill="url(#g_broker)" stroke="#4c1d95" stroke-width="2" filter="url(#shadow)"/>
+<rect x="582" y="72" width="236" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="700" y="105" text-anchor="middle" font-size="12" font-weight="700" fill="#ede9fe">MQTT Broker</text>
+<text x="700" y="134" text-anchor="middle" font-size="9" fill="#ede9fe" opacity="0.8">Mosquitto / EMQX · port 1883</text>
+<line x1="220" y1="105" x2="580" y2="105" stroke="#7c3aed" stroke-width="2" stroke-dasharray="7,3" marker-end="url(#arr_w)"/>
+<text x="400" y="99" text-anchor="middle" font-size="9" fill="#a78bfa">Wi-Fi / MQTT subscribe + publish</text>
+<rect x="-25" y="170" width="290" height="24" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+<text x="120" y="186" text-anchor="middle" font-size="11" font-weight="700" fill="#94a3b8">Zone 1 · Living Room</text>
+<rect x="30" y="210" width="180" height="52" rx="8" fill="url(#g_ctrl)" stroke="#1e3a8a" stroke-width="2" filter="url(#shadow)"/>
+<rect x="32" y="212" width="176" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="120" y="236" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">ESP32 Controller</text>
+<text x="120" y="256" text-anchor="middle" font-size="9" fill="#dbeafe" opacity="0.8">zone1</text>
+<rect x="-25" y="310" width="170" height="52" rx="8" fill="url(#g_ac_in)" stroke="#164e63" stroke-width="2" filter="url(#shadow)"/>
+<rect x="-23" y="312" width="166" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="60" y="336" text-anchor="middle" font-size="12" font-weight="700" fill="#cffafe">AC Indoor Unit</text>
+<text x="60" y="356" text-anchor="middle" font-size="9" fill="#cffafe" opacity="0.8">Split-type evaporator</text>
+<rect x="-25" y="420" width="170" height="52" rx="8" fill="url(#g_ac_out)" stroke="#1e3a8a" stroke-width="2" filter="url(#shadow)"/>
+<rect x="-23" y="422" width="166" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="60" y="446" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">AC Outdoor Unit</text>
+<text x="60" y="466" text-anchor="middle" font-size="9" fill="#dbeafe" opacity="0.8">Compressor / condenser</text>
+<rect x="165" y="310" width="150" height="42" rx="8" fill="url(#g_s_damp)" stroke="#78350f" stroke-width="2" filter="url(#shadow)"/>
+<rect x="167" y="312" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="240" y="331" text-anchor="middle" font-size="12" font-weight="700" fill="#fef9c3">Supply Damper</text>
+<text x="240" y="346" text-anchor="middle" font-size="9" fill="#fef9c3" opacity="0.8">0-10V actuator</text>
+<rect x="165" y="380" width="150" height="42" rx="8" fill="url(#g_r_damp)" stroke="#831843" stroke-width="2" filter="url(#shadow)"/>
+<rect x="167" y="382" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="240" y="401" text-anchor="middle" font-size="12" font-weight="700" fill="#fce7f3">Return Damper</text>
+<text x="240" y="416" text-anchor="middle" font-size="9" fill="#fce7f3" opacity="0.8">0-10V actuator</text>
+<rect x="-25" y="450" width="130" height="42" rx="8" fill="url(#g_s_reg)" stroke="#7c2d12" stroke-width="2" filter="url(#shadow)"/>
+<rect x="-23" y="452" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="40" y="471" text-anchor="middle" font-size="12" font-weight="700" fill="#ffedd5">Supply Register</text>
+<text x="40" y="486" text-anchor="middle" font-size="9" fill="#ffedd5" opacity="0.8">Diffuser</text>
+<rect x="165" y="450" width="150" height="42" rx="8" fill="url(#g_r_grille)" stroke="#881337" stroke-width="2" filter="url(#shadow)"/>
+<rect x="167" y="452" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="240" y="471" text-anchor="middle" font-size="12" font-weight="700" fill="#ffe4e6">Return Grille</text>
+<text x="240" y="486" text-anchor="middle" font-size="9" fill="#ffe4e6" opacity="0.8">Return air</text>
+<rect x="-25" y="540" width="130" height="42" rx="8" fill="url(#g_temp)" stroke="#065f46" stroke-width="2" filter="url(#shadow)"/>
+<rect x="-23" y="542" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="40" y="561" text-anchor="middle" font-size="12" font-weight="700" fill="#d1fae5">Temp/Humidity</text>
+<text x="40" y="576" text-anchor="middle" font-size="9" fill="#d1fae5" opacity="0.8">DS18B20 / SHT31</text>
+<rect x="-25" y="610" width="130" height="42" rx="8" fill="url(#g_press)" stroke="#164e63" stroke-width="2" filter="url(#shadow)"/>
+<rect x="-23" y="612" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="40" y="631" text-anchor="middle" font-size="12" font-weight="700" fill="#cffafe">Duct Pressure</text>
+<text x="40" y="646" text-anchor="middle" font-size="9" fill="#cffafe" opacity="0.8">MEMS ±500Pa</text>
+<rect x="165" y="540" width="150" height="42" rx="8" fill="url(#g_occ)" stroke="#78350f" stroke-width="2" filter="url(#shadow)"/>
+<rect x="167" y="542" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="240" y="561" text-anchor="middle" font-size="12" font-weight="700" fill="#fef9c3">Occupancy</text>
+<text x="240" y="576" text-anchor="middle" font-size="9" fill="#fef9c3" opacity="0.8">PIR / mmWave</text>
+<line x1="120" y1="140" x2="120" y2="170" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr_w)"/>
+<line x1="145" y1="331" x2="30" y2="246" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arr_b)" marker-start="url(#arrS_b)"/>
+<text x="80" y="282" text-anchor="middle" font-size="8" fill="#60a5fa">IR/RS485</text>
+<line x1="60" y1="362" x2="60" y2="420" stroke="#0891b2" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<text x="64" y="391" font-size="8" fill="#67e8f9">refrigerant</text>
+<line x1="210" y1="236" x2="185" y2="331" stroke="#b45309" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="220" y="280" font-size="8" fill="#fcd34d">0-10V</text>
+<line x1="210" y1="244" x2="185" y2="401" stroke="#be185d" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="250" y1="352" x2="40" y2="450" stroke="#b45309" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<line x1="250" y1="450" x2="250" y2="422" stroke="#be185d" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<line x1="40" y1="540" x2="50" y2="262" stroke="#059669" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="40" y1="610" x2="40" y2="262" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="250" y1="540" x2="180" y2="262" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="355" y="170" width="290" height="24" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+<text x="500" y="186" text-anchor="middle" font-size="11" font-weight="700" fill="#94a3b8">Zone 2 · Master Bedroom</text>
+<rect x="410" y="210" width="180" height="52" rx="8" fill="url(#g_ctrl)" stroke="#1e3a8a" stroke-width="2" filter="url(#shadow)"/>
+<rect x="412" y="212" width="176" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="500" y="236" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">ESP32 Controller</text>
+<text x="500" y="256" text-anchor="middle" font-size="9" fill="#dbeafe" opacity="0.8">zone2</text>
+<rect x="355" y="310" width="170" height="52" rx="8" fill="url(#g_ac_in)" stroke="#164e63" stroke-width="2" filter="url(#shadow)"/>
+<rect x="357" y="312" width="166" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="440" y="336" text-anchor="middle" font-size="12" font-weight="700" fill="#cffafe">AC Indoor Unit</text>
+<text x="440" y="356" text-anchor="middle" font-size="9" fill="#cffafe" opacity="0.8">Split-type evaporator</text>
+<rect x="355" y="420" width="170" height="52" rx="8" fill="url(#g_ac_out)" stroke="#1e3a8a" stroke-width="2" filter="url(#shadow)"/>
+<rect x="357" y="422" width="166" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="440" y="446" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">AC Outdoor Unit</text>
+<text x="440" y="466" text-anchor="middle" font-size="9" fill="#dbeafe" opacity="0.8">Compressor / condenser</text>
+<rect x="545" y="310" width="150" height="42" rx="8" fill="url(#g_s_damp)" stroke="#78350f" stroke-width="2" filter="url(#shadow)"/>
+<rect x="547" y="312" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="620" y="331" text-anchor="middle" font-size="12" font-weight="700" fill="#fef9c3">Supply Damper</text>
+<text x="620" y="346" text-anchor="middle" font-size="9" fill="#fef9c3" opacity="0.8">0-10V actuator</text>
+<rect x="545" y="380" width="150" height="42" rx="8" fill="url(#g_r_damp)" stroke="#831843" stroke-width="2" filter="url(#shadow)"/>
+<rect x="547" y="382" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="620" y="401" text-anchor="middle" font-size="12" font-weight="700" fill="#fce7f3">Return Damper</text>
+<text x="620" y="416" text-anchor="middle" font-size="9" fill="#fce7f3" opacity="0.8">0-10V actuator</text>
+<rect x="355" y="450" width="130" height="42" rx="8" fill="url(#g_s_reg)" stroke="#7c2d12" stroke-width="2" filter="url(#shadow)"/>
+<rect x="357" y="452" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="420" y="471" text-anchor="middle" font-size="12" font-weight="700" fill="#ffedd5">Supply Register</text>
+<text x="420" y="486" text-anchor="middle" font-size="9" fill="#ffedd5" opacity="0.8">Diffuser</text>
+<rect x="545" y="450" width="150" height="42" rx="8" fill="url(#g_r_grille)" stroke="#881337" stroke-width="2" filter="url(#shadow)"/>
+<rect x="547" y="452" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="620" y="471" text-anchor="middle" font-size="12" font-weight="700" fill="#ffe4e6">Return Grille</text>
+<text x="620" y="486" text-anchor="middle" font-size="9" fill="#ffe4e6" opacity="0.8">Return air</text>
+<rect x="355" y="540" width="130" height="42" rx="8" fill="url(#g_temp)" stroke="#065f46" stroke-width="2" filter="url(#shadow)"/>
+<rect x="357" y="542" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="420" y="561" text-anchor="middle" font-size="12" font-weight="700" fill="#d1fae5">Temp/Humidity</text>
+<text x="420" y="576" text-anchor="middle" font-size="9" fill="#d1fae5" opacity="0.8">DS18B20 / SHT31</text>
+<rect x="355" y="610" width="130" height="42" rx="8" fill="url(#g_press)" stroke="#164e63" stroke-width="2" filter="url(#shadow)"/>
+<rect x="357" y="612" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="420" y="631" text-anchor="middle" font-size="12" font-weight="700" fill="#cffafe">Duct Pressure</text>
+<text x="420" y="646" text-anchor="middle" font-size="9" fill="#cffafe" opacity="0.8">MEMS ±500Pa</text>
+<rect x="545" y="540" width="150" height="42" rx="8" fill="url(#g_occ)" stroke="#78350f" stroke-width="2" filter="url(#shadow)"/>
+<rect x="547" y="542" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="620" y="561" text-anchor="middle" font-size="12" font-weight="700" fill="#fef9c3">Occupancy</text>
+<text x="620" y="576" text-anchor="middle" font-size="9" fill="#fef9c3" opacity="0.8">PIR / mmWave</text>
+<line x1="500" y1="140" x2="500" y2="170" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr_w)"/>
+<line x1="525" y1="331" x2="410" y2="246" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arr_b)" marker-start="url(#arrS_b)"/>
+<text x="460" y="282" text-anchor="middle" font-size="8" fill="#60a5fa">IR/RS485</text>
+<line x1="440" y1="362" x2="440" y2="420" stroke="#0891b2" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<text x="444" y="391" font-size="8" fill="#67e8f9">refrigerant</text>
+<line x1="590" y1="236" x2="565" y2="331" stroke="#b45309" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="600" y="280" font-size="8" fill="#fcd34d">0-10V</text>
+<line x1="590" y1="244" x2="565" y2="401" stroke="#be185d" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="630" y1="352" x2="420" y2="450" stroke="#b45309" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<line x1="630" y1="450" x2="630" y2="422" stroke="#be185d" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<line x1="420" y1="540" x2="430" y2="262" stroke="#059669" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="420" y1="610" x2="420" y2="262" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="630" y1="540" x2="560" y2="262" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="735" y="170" width="290" height="24" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+<text x="880" y="186" text-anchor="middle" font-size="11" font-weight="700" fill="#94a3b8">Zone 3 · Home Office</text>
+<rect x="790" y="210" width="180" height="52" rx="8" fill="url(#g_ctrl)" stroke="#1e3a8a" stroke-width="2" filter="url(#shadow)"/>
+<rect x="792" y="212" width="176" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="880" y="236" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">ESP32 Controller</text>
+<text x="880" y="256" text-anchor="middle" font-size="9" fill="#dbeafe" opacity="0.8">zone3</text>
+<rect x="735" y="310" width="170" height="52" rx="8" fill="url(#g_ac_in)" stroke="#164e63" stroke-width="2" filter="url(#shadow)"/>
+<rect x="737" y="312" width="166" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="820" y="336" text-anchor="middle" font-size="12" font-weight="700" fill="#cffafe">AC Indoor Unit</text>
+<text x="820" y="356" text-anchor="middle" font-size="9" fill="#cffafe" opacity="0.8">Split-type evaporator</text>
+<rect x="735" y="420" width="170" height="52" rx="8" fill="url(#g_ac_out)" stroke="#1e3a8a" stroke-width="2" filter="url(#shadow)"/>
+<rect x="737" y="422" width="166" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="820" y="446" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">AC Outdoor Unit</text>
+<text x="820" y="466" text-anchor="middle" font-size="9" fill="#dbeafe" opacity="0.8">Compressor / condenser</text>
+<rect x="925" y="310" width="150" height="42" rx="8" fill="url(#g_s_damp)" stroke="#78350f" stroke-width="2" filter="url(#shadow)"/>
+<rect x="927" y="312" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="1000" y="331" text-anchor="middle" font-size="12" font-weight="700" fill="#fef9c3">Supply Damper</text>
+<text x="1000" y="346" text-anchor="middle" font-size="9" fill="#fef9c3" opacity="0.8">0-10V actuator</text>
+<rect x="925" y="380" width="150" height="42" rx="8" fill="url(#g_r_damp)" stroke="#831843" stroke-width="2" filter="url(#shadow)"/>
+<rect x="927" y="382" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="1000" y="401" text-anchor="middle" font-size="12" font-weight="700" fill="#fce7f3">Return Damper</text>
+<text x="1000" y="416" text-anchor="middle" font-size="9" fill="#fce7f3" opacity="0.8">0-10V actuator</text>
+<rect x="735" y="450" width="130" height="42" rx="8" fill="url(#g_s_reg)" stroke="#7c2d12" stroke-width="2" filter="url(#shadow)"/>
+<rect x="737" y="452" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="800" y="471" text-anchor="middle" font-size="12" font-weight="700" fill="#ffedd5">Supply Register</text>
+<text x="800" y="486" text-anchor="middle" font-size="9" fill="#ffedd5" opacity="0.8">Diffuser</text>
+<rect x="925" y="450" width="150" height="42" rx="8" fill="url(#g_r_grille)" stroke="#881337" stroke-width="2" filter="url(#shadow)"/>
+<rect x="927" y="452" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="1000" y="471" text-anchor="middle" font-size="12" font-weight="700" fill="#ffe4e6">Return Grille</text>
+<text x="1000" y="486" text-anchor="middle" font-size="9" fill="#ffe4e6" opacity="0.8">Return air</text>
+<rect x="735" y="540" width="130" height="42" rx="8" fill="url(#g_temp)" stroke="#065f46" stroke-width="2" filter="url(#shadow)"/>
+<rect x="737" y="542" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="800" y="561" text-anchor="middle" font-size="12" font-weight="700" fill="#d1fae5">Temp/Humidity</text>
+<text x="800" y="576" text-anchor="middle" font-size="9" fill="#d1fae5" opacity="0.8">DS18B20 / SHT31</text>
+<rect x="735" y="610" width="130" height="42" rx="8" fill="url(#g_press)" stroke="#164e63" stroke-width="2" filter="url(#shadow)"/>
+<rect x="737" y="612" width="126" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="800" y="631" text-anchor="middle" font-size="12" font-weight="700" fill="#cffafe">Duct Pressure</text>
+<text x="800" y="646" text-anchor="middle" font-size="9" fill="#cffafe" opacity="0.8">MEMS ±500Pa</text>
+<rect x="925" y="540" width="150" height="42" rx="8" fill="url(#g_occ)" stroke="#78350f" stroke-width="2" filter="url(#shadow)"/>
+<rect x="927" y="542" width="146" height="14" rx="6" fill="rgba(255,255,255,0.35)"/>
+<text x="1000" y="561" text-anchor="middle" font-size="12" font-weight="700" fill="#fef9c3">Occupancy</text>
+<text x="1000" y="576" text-anchor="middle" font-size="9" fill="#fef9c3" opacity="0.8">PIR / mmWave</text>
+<line x1="880" y1="140" x2="880" y2="170" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr_w)"/>
+<line x1="905" y1="331" x2="790" y2="246" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arr_b)" marker-start="url(#arrS_b)"/>
+<text x="840" y="282" text-anchor="middle" font-size="8" fill="#60a5fa">IR/RS485</text>
+<line x1="820" y1="362" x2="820" y2="420" stroke="#0891b2" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<text x="824" y="391" font-size="8" fill="#67e8f9">refrigerant</text>
+<line x1="970" y1="236" x2="945" y2="331" stroke="#b45309" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="980" y="280" font-size="8" fill="#fcd34d">0-10V</text>
+<line x1="970" y1="244" x2="945" y2="401" stroke="#be185d" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="1010" y1="352" x2="800" y2="450" stroke="#b45309" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<line x1="1010" y1="450" x2="1010" y2="422" stroke="#be185d" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+<line x1="800" y1="540" x2="810" y2="262" stroke="#059669" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="800" y1="610" x2="800" y2="262" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="1010" y1="540" x2="940" y2="262" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="330" y1="170" x2="330" y2="880" stroke="#1e293b" stroke-width="2" stroke-dasharray="8,4"/>
+<line x1="710" y1="170" x2="710" y2="880" stroke="#1e293b" stroke-width="2" stroke-dasharray="8,4"/>
+<rect x="1050" y="160" width="320" height="360" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+<text x="1200" y="176" text-anchor="middle" font-size="12" font-weight="700" fill="#e2e8f0">LEGEND</text>
+<rect x="1060" y="190" width="22" height="16" rx="4" fill="url(#g_tablet)" stroke="#4c1d95" stroke-width="1.5"/>
+<text x="1090" y="202" font-size="11" fill="#cbd5e1">Tablet Dashboard (HA UI)</text>
+<rect x="1060" y="217" width="22" height="16" rx="4" fill="url(#g_broker)" stroke="#4c1d95" stroke-width="1.5"/>
+<text x="1090" y="229" font-size="11" fill="#cbd5e1">MQTT Broker</text>
+<rect x="1060" y="244" width="22" height="16" rx="4" fill="url(#g_ctrl)" stroke="#1e3a8a" stroke-width="1.5"/>
+<text x="1090" y="256" font-size="11" fill="#cbd5e1">ESP32 Zone Controller</text>
+<rect x="1060" y="271" width="22" height="16" rx="4" fill="url(#g_ac_in)" stroke="#164e63" stroke-width="1.5"/>
+<text x="1090" y="283" font-size="11" fill="#cbd5e1">AC Indoor Unit</text>
+<rect x="1060" y="298" width="22" height="16" rx="4" fill="url(#g_ac_out)" stroke="#1e3a8a" stroke-width="1.5"/>
+<text x="1090" y="310" font-size="11" fill="#cbd5e1">AC Outdoor Unit</text>
+<rect x="1060" y="325" width="22" height="16" rx="4" fill="url(#g_s_damp)" stroke="#78350f" stroke-width="1.5"/>
+<text x="1090" y="337" font-size="11" fill="#cbd5e1">Supply Damper (0-10V)</text>
+<rect x="1060" y="352" width="22" height="16" rx="4" fill="url(#g_r_damp)" stroke="#831843" stroke-width="1.5"/>
+<text x="1090" y="364" font-size="11" fill="#cbd5e1">Return Damper (0-10V)</text>
+<rect x="1060" y="379" width="22" height="16" rx="4" fill="url(#g_s_reg)" stroke="#7c2d12" stroke-width="1.5"/>
+<text x="1090" y="391" font-size="11" fill="#cbd5e1">Supply Register</text>
+<rect x="1060" y="406" width="22" height="16" rx="4" fill="url(#g_r_grille)" stroke="#881337" stroke-width="1.5"/>
+<text x="1090" y="418" font-size="11" fill="#cbd5e1">Return Grille</text>
+<rect x="1060" y="433" width="22" height="16" rx="4" fill="url(#g_temp)" stroke="#065f46" stroke-width="1.5"/>
+<text x="1090" y="445" font-size="11" fill="#cbd5e1">Temp / Humidity Sensor</text>
+<rect x="1060" y="460" width="22" height="16" rx="4" fill="url(#g_press)" stroke="#164e63" stroke-width="1.5"/>
+<text x="1090" y="472" font-size="11" fill="#cbd5e1">Duct Pressure Sensor</text>
+<rect x="1060" y="487" width="22" height="16" rx="4" fill="url(#g_occ)" stroke="#78350f" stroke-width="1.5"/>
+<text x="1090" y="499" font-size="11" fill="#cbd5e1">Occupancy Sensor</text>
+<text x="1200" y="524" text-anchor="middle" font-size="10" font-weight="700" fill="#94a3b8">CONNECTIONS</text>
+<line x1="1060" y1="544" x2="1088" y2="544" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arr)"/>
+<text x="1096" y="549" font-size="10" fill="#94a3b8">MQTT over Wi-Fi</text>
+<line x1="1060" y1="566" x2="1088" y2="566" stroke="#2563eb" stroke-width="2" marker-end="url(#arr)"/>
+<text x="1096" y="571" font-size="10" fill="#94a3b8">IR / RS485 control</text>
+<line x1="1060" y1="588" x2="1088" y2="588" stroke="#0891b2" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arr)"/>
+<text x="1096" y="593" font-size="10" fill="#94a3b8">Refrigerant piping</text>
+<line x1="1060" y1="610" x2="1088" y2="610" stroke="#b45309" stroke-width="2" marker-end="url(#arr)"/>
+<text x="1096" y="615" font-size="10" fill="#94a3b8">0-10V analog signal</text>
+<line x1="1060" y1="632" x2="1088" y2="632" stroke="#888888" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arr)"/>
+<text x="1096" y="637" font-size="10" fill="#94a3b8">Duct airflow</text>
+</svg>
+</body>
+</html>

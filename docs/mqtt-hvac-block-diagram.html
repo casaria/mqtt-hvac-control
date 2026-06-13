@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MQTT HVAC Control – Block Diagram</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; padding: 20px; background: #fff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; }
+    h1 { font-size: 16px; color: #333; margin-bottom: 16px; letter-spacing: 0.5px; }
+    svg { max-width: 100%; height: auto; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+  </style>
+</head>
+<body>
+  <h1>MQTT HVAC Control — Inner Workings Block Diagram</h1>
+  <svg viewBox="0 0 820 540" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, sans-serif" font-size="12">
+    <title>MQTT HVAC Control – Block Diagram</title>
+    <desc>Block diagram showing how the YAML config files, automations, zones, and MQTT broker interconnect.</desc>
+
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+        <path d="M0,0 L0,7 L8,3.5 z" fill="#888"/>
+      </marker>
+      <marker id="arrS" markerWidth="8" markerHeight="8" refX="1" refY="3.5" orient="auto-start-reverse">
+        <path d="M0,0 L0,7 L8,3.5 z" fill="#888"/>
+      </marker>
+    </defs>
+
+    <!-- Background sections -->
+    <rect x="10" y="10" width="240" height="195" rx="10" fill="#f0f4ff" stroke="#c5d0f0" stroke-width="1.5"/>
+    <text x="130" y="28" text-anchor="middle" font-size="10" font-weight="700" fill="#4a5fa0" letter-spacing="1">CONFIG LAYER</text>
+
+    <rect x="10" y="220" width="240" height="200" rx="10" fill="#f0fff4" stroke="#b2d8c0" stroke-width="1.5"/>
+    <text x="130" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#2e7d52" letter-spacing="1">AUTOMATION LAYER</text>
+
+    <rect x="300" y="220" width="220" height="200" rx="10" fill="#fff8ec" stroke="#f0c97a" stroke-width="1.5"/>
+    <text x="410" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#a06d00" letter-spacing="1">MQTT BROKER</text>
+
+    <rect x="570" y="10" width="240" height="410" rx="10" fill="#fef0f0" stroke="#f0c0c0" stroke-width="1.5"/>
+    <text x="690" y="28" text-anchor="middle" font-size="10" font-weight="700" fill="#a02020" letter-spacing="1">ZONE LAYER</text>
+
+    <rect x="300" y="440" width="220" height="80" rx="10" fill="#f5f0ff" stroke="#c8b8f0" stroke-width="1.5"/>
+    <text x="410" y="458" text-anchor="middle" font-size="10" font-weight="700" fill="#5a3a9a" letter-spacing="1">CLI SCRIPTS</text>
+
+    <!-- Config files -->
+    <rect x="28" y="38" width="200" height="44" rx="5" fill="#dce8ff" stroke="#93b4e8" stroke-width="1"/>
+    <text x="128" y="56" text-anchor="middle" font-weight="600" font-size="11" fill="#1a3a7a">broker.yaml</text>
+    <text x="128" y="71" text-anchor="middle" font-size="10" fill="#555">host · port · TLS · QoS</text>
+
+    <rect x="28" y="92" width="200" height="44" rx="5" fill="#dce8ff" stroke="#93b4e8" stroke-width="1"/>
+    <text x="128" y="110" text-anchor="middle" font-weight="600" font-size="11" fill="#1a3a7a">devices.yaml</text>
+    <text x="128" y="125" text-anchor="middle" font-size="10" fill="#555">zones · setpoints · sensors</text>
+
+    <rect x="28" y="146" width="200" height="44" rx="5" fill="#dce8ff" stroke="#93b4e8" stroke-width="1"/>
+    <text x="128" y="164" text-anchor="middle" font-weight="600" font-size="11" fill="#1a3a7a">topics.yaml</text>
+    <text x="128" y="179" text-anchor="middle" font-size="10" fill="#555">hvac/{zone}/setpoint · mode · fan</text>
+
+    <!-- Automation files -->
+    <rect x="28" y="248" width="200" height="34" rx="5" fill="#c8f0d8" stroke="#6dbb90" stroke-width="1"/>
+    <text x="128" y="261" text-anchor="middle" font-weight="600" font-size="11" fill="#1a5a30">thermostat.yaml</text>
+    <text x="128" y="275" text-anchor="middle" font-size="10" fill="#555">setpoint · mode reactions</text>
+
+    <rect x="28" y="291" width="200" height="34" rx="5" fill="#c8f0d8" stroke="#6dbb90" stroke-width="1"/>
+    <text x="128" y="304" text-anchor="middle" font-weight="600" font-size="11" fill="#1a5a30">schedules.yaml</text>
+    <text x="128" y="318" text-anchor="middle" font-size="10" fill="#555">weekday / weekend programs</text>
+
+    <rect x="28" y="334" width="200" height="34" rx="5" fill="#c8f0d8" stroke="#6dbb90" stroke-width="1"/>
+    <text x="128" y="347" text-anchor="middle" font-weight="600" font-size="11" fill="#1a5a30">presence.yaml</text>
+    <text x="128" y="361" text-anchor="middle" font-size="10" fill="#555">away mode · setback</text>
+
+    <rect x="28" y="377" width="200" height="34" rx="5" fill="#c8f0d8" stroke="#6dbb90" stroke-width="1"/>
+    <text x="128" y="390" text-anchor="middle" font-weight="600" font-size="11" fill="#1a5a30">alerts.yaml</text>
+    <text x="128" y="404" text-anchor="middle" font-size="10" fill="#555">faults · humidity · freeze</text>
+
+    <!-- Broker internals -->
+    <rect x="316" y="252" width="188" height="36" rx="5" fill="#ffe8b0" stroke="#e8b030" stroke-width="1"/>
+    <text x="410" y="266" text-anchor="middle" font-weight="600" font-size="11" fill="#7a4a00">Control Topics</text>
+    <text x="410" y="279" text-anchor="middle" font-size="10" fill="#555">setpoint · mode · fan · power</text>
+
+    <rect x="316" y="298" width="188" height="36" rx="5" fill="#ffe8b0" stroke="#e8b030" stroke-width="1"/>
+    <text x="410" y="312" text-anchor="middle" font-weight="600" font-size="11" fill="#7a4a00">State Topics (retained)</text>
+    <text x="410" y="325" text-anchor="middle" font-size="10" fill="#555">setpoint/state · mode/state</text>
+
+    <rect x="316" y="344" width="188" height="36" rx="5" fill="#ffe8b0" stroke="#e8b030" stroke-width="1"/>
+    <text x="410" y="358" text-anchor="middle" font-weight="600" font-size="11" fill="#7a4a00">Telemetry Topics</text>
+    <text x="410" y="371" text-anchor="middle" font-size="10" fill="#555">temperature · humidity · status</text>
+
+    <rect x="316" y="390" width="188" height="36" rx="5" fill="#ffe8b0" stroke="#e8b030" stroke-width="1"/>
+    <text x="410" y="404" text-anchor="middle" font-weight="600" font-size="11" fill="#7a4a00">Availability (LWT)</text>
+    <text x="410" y="417" text-anchor="middle" font-size="10" fill="#555">online / offline</text>
+
+    <!-- Zones -->
+    <rect x="586" y="38" width="206" height="75" rx="5" fill="#ffd8d8" stroke="#d08080" stroke-width="1"/>
+    <text x="689" y="56" text-anchor="middle" font-weight="600" font-size="11" fill="#7a1010">zone1 – Living Room</text>
+    <text x="689" y="70" text-anchor="middle" font-size="10" fill="#555">split_ac · 16–30°C · default 22°C</text>
+    <text x="689" y="83" text-anchor="middle" font-size="10" fill="#555">temp · humidity · occupancy</text>
+    <text x="689" y="96" text-anchor="middle" font-size="10" fill="#555">mode: auto · fan: auto</text>
+
+    <rect x="586" y="123" width="206" height="75" rx="5" fill="#ffd8d8" stroke="#d08080" stroke-width="1"/>
+    <text x="689" y="141" text-anchor="middle" font-weight="600" font-size="11" fill="#7a1010">zone2 – Master Bedroom</text>
+    <text x="689" y="155" text-anchor="middle" font-size="10" fill="#555">split_ac · 16–28°C · default 21°C</text>
+    <text x="689" y="168" text-anchor="middle" font-size="10" fill="#555">temp · humidity · occupancy</text>
+    <text x="689" y="181" text-anchor="middle" font-size="10" fill="#555">mode: auto · fan: auto</text>
+
+    <rect x="586" y="208" width="206" height="75" rx="5" fill="#ffd8d8" stroke="#d08080" stroke-width="1"/>
+    <text x="689" y="226" text-anchor="middle" font-weight="600" font-size="11" fill="#7a1010">zone3 – Home Office</text>
+    <text x="689" y="240" text-anchor="middle" font-size="10" fill="#555">split_ac · 18–28°C · default 23°C</text>
+    <text x="689" y="253" text-anchor="middle" font-size="10" fill="#555">temp · occupancy</text>
+    <text x="689" y="266" text-anchor="middle" font-size="10" fill="#555">mode: cool · fan: low</text>
+
+    <rect x="586" y="295" width="206" height="44" rx="5" fill="#f8d8d8" stroke="#d08080" stroke-width="1"/>
+    <text x="689" y="313" text-anchor="middle" font-weight="600" font-size="11" fill="#7a1010">Setback (global)</text>
+    <text x="689" y="328" text-anchor="middle" font-size="10" fill="#555">heating 17°C · cooling 26°C</text>
+
+    <rect x="586" y="350" width="206" height="44" rx="5" fill="#ffe0f0" stroke="#c070a0" stroke-width="1"/>
+    <text x="689" y="368" text-anchor="middle" font-weight="600" font-size="11" fill="#7a1050">Home Assistant</text>
+    <text x="689" y="382" text-anchor="middle" font-size="10" fill="#555">mqtt: climate entity per zone</text>
+
+    <!-- CLI Scripts -->
+    <rect x="316" y="462" width="188" height="26" rx="5" fill="#e8e0ff" stroke="#9880d8" stroke-width="1"/>
+    <text x="410" y="475" text-anchor="middle" font-weight="600" font-size="11" fill="#3a1a8a">publish_setpoint.sh</text>
+    <text x="410" y="488" text-anchor="middle" font-size="9" fill="#555">mosquitto_pub → control topic</text>
+
+    <rect x="316" y="494" width="188" height="18" rx="5" fill="#e8e0ff" stroke="#9880d8" stroke-width="1"/>
+    <text x="410" y="507" text-anchor="middle" font-weight="600" font-size="10" fill="#3a1a8a">subscribe_status.sh → telemetry</text>
+
+    <!-- Arrows: config → broker/zones -->
+    <line x1="228" y1="60" x2="308" y2="310" stroke="#93b4e8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+    <line x1="228" y1="114" x2="570" y2="175" stroke="#93b4e8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+    <line x1="228" y1="168" x2="316" y2="265" stroke="#93b4e8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+
+    <!-- Arrows: automations → broker -->
+    <line x1="228" y1="265" x2="316" y2="265" stroke="#6dbb90" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="228" y1="308" x2="316" y2="315" stroke="#6dbb90" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="228" y1="351" x2="316" y2="360" stroke="#6dbb90" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="228" y1="394" x2="316" y2="405" stroke="#6dbb90" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- Arrows: broker ↔ zones -->
+    <line x1="504" y1="270" x2="586" y2="76" stroke="#e8b030" stroke-width="1.5" marker-end="url(#arr)" marker-start="url(#arrS)"/>
+    <line x1="504" y1="316" x2="586" y2="162" stroke="#e8b030" stroke-width="1.5" marker-end="url(#arr)" marker-start="url(#arrS)"/>
+    <line x1="504" y1="362" x2="586" y2="248" stroke="#e8b030" stroke-width="1.5" marker-end="url(#arr)" marker-start="url(#arrS)"/>
+
+    <!-- Zone → setback -->
+    <line x1="689" y1="283" x2="689" y2="295" stroke="#d08080" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- Broker → HA -->
+    <line x1="504" y1="395" x2="586" y2="372" stroke="#e8b030" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- Scripts → broker -->
+    <line x1="410" y1="440" x2="410" y2="426" stroke="#9880d8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- Legend -->
+    <rect x="10" y="432" width="270" height="68" rx="6" fill="#fafafa" stroke="#ddd" stroke-width="1"/>
+    <text x="20" y="448" font-size="10" font-weight="700" fill="#333">LEGEND</text>
+    <line x1="20" y1="460" x2="50" y2="460" stroke="#93b4e8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+    <text x="56" y="464" font-size="10" fill="#444">Config defines structure</text>
+    <line x1="20" y1="476" x2="50" y2="476" stroke="#6dbb90" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="56" y="480" font-size="10" fill="#444">Automation publishes command</text>
+    <line x1="20" y1="492" x2="50" y2="492" stroke="#e8b030" stroke-width="1.5" marker-end="url(#arr)" marker-start="url(#arrS)"/>
+    <text x="56" y="496" font-size="10" fill="#444">Broker ↔ Zone (pub / sub)</text>
+  </svg>
+</body>
+</html>
