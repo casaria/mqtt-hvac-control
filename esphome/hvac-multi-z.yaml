@@ -78,6 +78,52 @@ esp32:
 
 logger:
 
+# ─── GLOBALS ──────────────────────────────────────────────────────────────────
+globals:
+  # Floor 2 coordinator state
+  - id: floor2_mode       # 0=off 1=heat 2=cool 3=fan
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: floor2_locked     # mode-change lockout (3 min compressor protection)
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # Previous active state — used to detect zone satisfaction for LED flash
+  - id: z1_was_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: z2_was_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: z3_was_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: bath_was_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # Bathroom zone state — set via MQTT from Zigbee2MQTT (no hardwired thermostat)
+  - id: bath_req_heat
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: bath_req_cool
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: bath_req_fan
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: bath_win_open
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
 api:
   encryption:
     key: !secret api_key
@@ -157,6 +203,23 @@ mqtt:
       then:
         - lambda: |-
             mqtt::global_mqtt_client->publish("${faikin_ac2}/command", x);
+
+    # ── Bathroom Zigbee thermostat demand (via Zigbee2MQTT) ──────────────────
+    # Publish heat/cool/fan/off to these topics from a Zigbee2MQTT automation
+    - topic: ${mqtt_prefix}/floor2/bathroom/demand/set
+      then:
+        - lambda: |-
+            id(bath_req_heat) = (x == "heat");
+            id(bath_req_cool) = (x == "cool");
+            id(bath_req_fan)  = (x == "fan");
+        - script.execute: update_f2_coordinator
+
+    # Bathroom window sensor via Zigbee (reed switch on Zigbee contact sensor)
+    - topic: ${mqtt_prefix}/floor2/bathroom/window/set
+      then:
+        - lambda: |-
+            id(bath_win_open) = (x == "open" || x == "true" || x == "1");
+        - script.execute: update_f2_coordinator
 
     # ── Floor 2 damper direct position override ───────────
     # Bathroom: triggered by Zigbee2MQTT automation once thermostat is configured
@@ -708,33 +771,284 @@ cover:
             root["state"] = (s == esphome::cover::COVER_OPERATION_OPENING) ? "opening" :
                             (s == esphome::cover::COVER_OPERATION_CLOSING) ? "closing" : "stopped";
 
-# ─── SCRIPT — Floor 2 fan auto-speed ─────────────────────────────────────────
+# ─── SCRIPTS — Floor 2 coordinator + auxiliary ───────────────────────────────
 script:
-  - id: update_f2_fans
+
+  # ── 3-minute compressor mode-change lockout ───────────────────────────────
+  - id: mode_unlock_timer
+    mode: restart
+    then:
+      - delay: 3min
+      - lambda: "id(floor2_locked) = false;"
+
+  # ── Satisfied flash: solid green for 4 s then re-run coordinator ──────────
+  # Zone 1 (Master Bedroom)
+  - id: satisfied_flash_z1
+    mode: restart
+    then:
+      - light.turn_on:
+          id: zone1_led
+          red: 0%
+          green: 100%
+          blue: 15%
+          brightness: 80%
+          effect: "none"
+      - delay: 4s
+      - script.execute: update_f2_coordinator
+
+  # Zone 2
+  - id: satisfied_flash_z2
+    mode: restart
+    then:
+      - light.turn_on:
+          id: zone2_led
+          red: 0%
+          green: 100%
+          blue: 15%
+          brightness: 80%
+          effect: "none"
+      - delay: 4s
+      - script.execute: update_f2_coordinator
+
+  # Zone 3
+  - id: satisfied_flash_z3
+    mode: restart
+    then:
+      - light.turn_on:
+          id: zone3_led
+          red: 0%
+          green: 100%
+          blue: 15%
+          brightness: 80%
+          effect: "none"
+      - delay: 4s
+      - script.execute: update_f2_coordinator
+
+  # Bathroom
+  - id: satisfied_flash_bath
+    mode: restart
+    then:
+      - light.turn_on:
+          id: bath_led
+          red: 0%
+          green: 100%
+          blue: 15%
+          brightness: 80%
+          effect: "none"
+      - delay: 4s
+      - script.execute: update_f2_coordinator
+
+  # ── Main Floor 2 coordinator ──────────────────────────────────────────────
+  # Called by any zone state change, window sensor change, IAQ update, or MQTT demand.
+  # Handles: weighted voting, compressor mode, dampers, fans, zone LEDs, MQTT publish.
+  - id: update_f2_coordinator
+    mode: queued
+    max_runs: 1
     then:
       - lambda: |-
-          bool z1 = id(HVAC_DAMPER_1).position > 0.05f;
-          bool z2 = id(HVAC_DAMPER_2).position > 0.05f;
-          bool z3 = id(HVAC_DAMPER_3).position > 0.05f;
+          // ── Zone input state ──────────────────────────────────────────────
+          // Indices: 0=Z1(master,w=2), 1=Z2(w=1), 2=Z3(w=1), 3=Bath(w=1)
+          bool w_open[4] = {
+              id(WIN_Z1).state,
+              id(WIN_Z2).state,
+              id(WIN_Z3).state,
+              id(bath_win_open)
+          };
+          bool req_heat[4] = {
+              id(ZONE_1_W).state,
+              id(ZONE_2_W).state,
+              id(ZONE_3_W).state,
+              id(bath_req_heat)
+          };
+          bool req_cool[4] = {
+              id(ZONE_1_Y1).state,
+              id(ZONE_2_Y1).state,
+              id(ZONE_3_Y1).state,
+              id(bath_req_cool)
+          };
+          bool req_fan[4] = {
+              id(ZONE_1_G).state && !req_heat[0] && !req_cool[0],
+              id(ZONE_2_G).state && !req_heat[1] && !req_cool[1],
+              id(ZONE_3_G).state && !req_heat[2] && !req_cool[2],
+              id(bath_req_fan) && !req_heat[3] && !req_cool[3]
+          };
+          int weight[4] = {
+              (int)id(z1_weight).state,
+              (int)id(z2_weight).state,
+              (int)id(z3_weight).state,
+              (int)id(zbath_weight).state
+          };
 
-          // fan0 serves zones 1+2; fan1 serves zones 2+3
-          int f0_cnt = (z1 ? 1 : 0) + (z2 ? 1 : 0);
-          int f1_cnt = (z2 ? 1 : 0) + (z3 ? 1 : 0);
+          // ── Duct satisfaction (within 0.5°C of setpoint while active) ────
+          bool duct_ok[4] = {
+              id(z1_duct_temp).has_state() && std::abs(id(z1_duct_temp).state - id(z1_duct_setpoint).state) <= 0.5f,
+              id(z2_duct_temp).has_state() && std::abs(id(z2_duct_temp).state - id(z2_duct_setpoint).state) <= 0.5f,
+              id(z3_duct_temp).has_state() && std::abs(id(z3_duct_temp).state - id(z3_duct_setpoint).state) <= 0.5f,
+              false  // no duct sensor for bathroom
+          };
 
-          if (f0_cnt == 0) {
-            id(fan0).make_call().set_state(false).perform();
-          } else {
-            id(fan0).make_call().set_state(true).set_speed(f0_cnt == 1 ? 40 : 70).perform();
+          // ── Weighted majority vote (window-open zones excluded) ───────────
+          int heat_score = 0, cool_score = 0, fan_score = 0;
+          for (int i = 0; i < 4; i++) {
+              if (w_open[i]) continue;
+              if (req_heat[i]) heat_score += weight[i];
+              if (req_cool[i]) cool_score += weight[i];
+              if (req_fan[i])  fan_score  += weight[i];
           }
-          if (f1_cnt == 0) {
-            id(fan1).make_call().set_state(false).perform();
-          } else {
-            id(fan1).make_call().set_state(true).set_speed(f1_cnt == 1 ? 40 : 70).perform();
+          int nm = 0;
+          if      (heat_score > 0 && heat_score >= cool_score) nm = 1;
+          else if (cool_score > heat_score && cool_score > 0)  nm = 2;
+          else if (fan_score > 0)                              nm = 3;
+
+          // ── Mode change with 3-min compressor lockout ─────────────────────
+          int cm = id(floor2_mode);
+          if (nm != cm) {
+              bool can_switch = !id(floor2_locked) ||
+                                nm == 0 ||
+                                (cm == 1 && nm == 1) ||  // same mode
+                                (cm == 2 && nm == 2) ||
+                                (cm == 3 && nm == 3);
+              if (can_switch) {
+                  id(floor2_mode) = nm;
+                  if (nm != 0 && cm != nm) {
+                      id(floor2_locked) = true;
+                      id(mode_unlock_timer).execute();
+                  }
+                  const char* cmds[] = {
+                      "{\"power\":false}",
+                      "{\"power\":true,\"mode\":\"H\",\"fan\":\"A\"}",
+                      "{\"power\":true,\"mode\":\"C\",\"fan\":\"A\"}",
+                      "{\"power\":true,\"mode\":\"F\",\"fan\":\"A\"}"
+                  };
+                  mqtt::global_mqtt_client->publish("${faikin_ac2}/command", cmds[nm]);
+                  cm = nm;
+              }
           }
 
-          bool any = z1 || z2 || z3;
-          if (!any)
-            mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":false}");
+          // ── Dampers: open if window-closed + request matches active mode ──
+          // Array index: 0=Z1, 1=Z2, 2=Z3, 3=Bath
+          // Damper entities: HVAC_DAMPER_1=Z1, HVAC_DAMPER_2=Z2, HVAC_DAMPER_3=Z3, HVAC_DAMPER_0=Bath
+          bool open_d[4];
+          for (int i = 0; i < 4; i++) {
+              if (w_open[i]) { open_d[i] = false; continue; }
+              open_d[i] = (cm==1 && req_heat[i]) ||
+                          (cm==2 && req_cool[i]) ||
+                          (cm==3 && req_fan[i]);
+          }
+          if (open_d[0]) id(HVAC_DAMPER_1).make_call().set_command_open().perform();
+          else           id(HVAC_DAMPER_1).make_call().set_command_close().perform();
+          if (open_d[1]) id(HVAC_DAMPER_2).make_call().set_command_open().perform();
+          else           id(HVAC_DAMPER_2).make_call().set_command_close().perform();
+          if (open_d[2]) id(HVAC_DAMPER_3).make_call().set_command_open().perform();
+          else           id(HVAC_DAMPER_3).make_call().set_command_close().perform();
+          if (open_d[3]) id(HVAC_DAMPER_0).make_call().set_command_open().perform();
+          else           id(HVAC_DAMPER_0).make_call().set_command_close().perform();
+
+          // ── Fan speeds: fan0 serves Z1+Z2, fan1 serves Z2+Z3 ─────────────
+          int f0_cnt = (int)open_d[0] + (int)open_d[1];
+          int f1_cnt = (int)open_d[1] + (int)open_d[2];
+          if (f0_cnt == 0) id(fan0).make_call().set_state(false).perform();
+          else             id(fan0).make_call().set_state(true).set_speed(f0_cnt==1?40:70).perform();
+          if (f1_cnt == 0) id(fan1).make_call().set_state(false).perform();
+          else             id(fan1).make_call().set_state(true).set_speed(f1_cnt==1?40:70).perform();
+
+          // ── AQI level for idle-zone LED color ─────────────────────────────
+          float iaq_val = id(iaq_index).has_state() ? id(iaq_index).state : 0.0f;
+          int aqi_st = (iaq_val > 300) ? 9 : (iaq_val > 200) ? 8 : (iaq_val > 150) ? 7 : 0;
+
+          // ── Zone LED updates ──────────────────────────────────────────────
+          // LED order: zone1_led(idx0), zone2_led(idx1), zone3_led(idx2), bath_led(idx3)
+          esphome::light::LightState* leds[4] = {
+              id(zone1_led), id(zone2_led), id(zone3_led), id(bath_led)
+          };
+          // Track previous active state for satisfied-flash detection
+          bool now_active[4];
+          for (int i = 0; i < 4; i++)
+              now_active[i] = req_heat[i] || req_cool[i] || req_fan[i];
+          bool was_active[4] = {
+              id(z1_was_active), id(z2_was_active),
+              id(z3_was_active), id(bath_was_active)
+          };
+
+          for (int i = 0; i < 4; i++) {
+              // Skip zones whose satisfied-flash script is actively running
+              // (they will re-call coordinator on completion)
+              if (was_active[i] && !now_active[i] && !w_open[i]) {
+                  // Just went idle — satisfied flash will override LED
+                  // (triggered below); skip LED update for this zone
+                  continue;
+              }
+
+              auto c = leds[i]->make_call();
+
+              if (w_open[i]) {
+                  // Window open — red fast strobe (inhibited)
+                  c.set_state(true); c.set_rgb(1.0f, 0.0f, 0.0f);
+                  c.set_brightness(1.0f); c.set_effect("Fast Strobe");
+
+              } else if (open_d[i] && duct_ok[i] && (req_heat[i] || req_cool[i])) {
+                  // Active delivery AND duct reached setpoint — steady green (satisfied)
+                  c.set_state(true); c.set_rgb(0.0f, 1.0f, 0.15f);
+                  c.set_brightness(0.8f); c.set_effect("none");
+
+              } else if (req_heat[i] && open_d[i]) {
+                  // Heating — warm orange slow pulse
+                  c.set_state(true); c.set_rgb(1.0f, 0.55f, 0.0f);
+                  c.set_brightness(0.8f); c.set_effect("Slow Pulse");
+
+              } else if (req_cool[i] && open_d[i]) {
+                  // Cooling — cool blue slow pulse
+                  c.set_state(true); c.set_rgb(0.0f, 0.53f, 1.0f);
+                  c.set_brightness(0.8f); c.set_effect("Slow Pulse");
+
+              } else if (req_fan[i] && open_d[i]) {
+                  // Fan-only — dim white slow pulse
+                  c.set_state(true); c.set_rgb(1.0f, 1.0f, 1.0f);
+                  c.set_brightness(0.3f); c.set_effect("Slow Pulse");
+
+              } else if (req_heat[i] || req_cool[i]) {
+                  // Queued — requesting but mode mismatch — amber slow pulse
+                  c.set_state(true); c.set_rgb(1.0f, 0.9f, 0.0f);
+                  c.set_brightness(0.5f); c.set_effect("Slow Pulse");
+
+              } else if (aqi_st == 9) {
+                  // IAQ critical (>300) — red slow pulse
+                  c.set_state(true); c.set_rgb(1.0f, 0.0f, 0.0f);
+                  c.set_brightness(0.7f); c.set_effect("Slow Pulse");
+
+              } else if (aqi_st == 8) {
+                  // IAQ severe (>200) — deep orange steady
+                  c.set_state(true); c.set_rgb(1.0f, 0.4f, 0.0f);
+                  c.set_brightness(0.6f); c.set_effect("none");
+
+              } else if (aqi_st == 7) {
+                  // IAQ warning (>150) — yellow slow pulse
+                  c.set_state(true); c.set_rgb(1.0f, 0.9f, 0.0f);
+                  c.set_brightness(0.4f); c.set_effect("Slow Pulse");
+
+              } else {
+                  // Idle + good air — LED off
+                  c.set_state(false);
+              }
+              c.perform();
+          }
+
+          // ── Trigger satisfied flash for zones that just went idle ─────────
+          if (was_active[0] && !now_active[0] && !w_open[0]) id(satisfied_flash_z1).execute();
+          if (was_active[1] && !now_active[1] && !w_open[1]) id(satisfied_flash_z2).execute();
+          if (was_active[2] && !now_active[2] && !w_open[2]) id(satisfied_flash_z3).execute();
+          if (was_active[3] && !now_active[3] && !w_open[3]) id(satisfied_flash_bath).execute();
+
+          // ── Update was_active globals ─────────────────────────────────────
+          id(z1_was_active)   = now_active[0];
+          id(z2_was_active)   = now_active[1];
+          id(z3_was_active)   = now_active[2];
+          id(bath_was_active) = now_active[3];
+
+          // ── MQTT floor2 mode publish ──────────────────────────────────────
+          const char* ms[] = {"off", "heat", "cool", "fan"};
+          mqtt::global_mqtt_client->publish(
+              "${mqtt_prefix}/floor2/mode/state", ms[cm], 0, true);
 
 # ─── SENSORS ─────────────────────────────────────────────────────────────────
 sensor:
@@ -749,6 +1063,7 @@ sensor:
       - mqtt.publish:
           topic: ${mqtt_prefix}/floor2/zone1/temperature
           payload: !lambda "return to_string(x);"
+      - script.execute: update_f2_coordinator   # re-evaluate duct satisfaction
 
   - platform: dallas_temp
     address: 0x00000000000002
@@ -760,6 +1075,7 @@ sensor:
       - mqtt.publish:
           topic: ${mqtt_prefix}/floor2/zone2/temperature
           payload: !lambda "return to_string(x);"
+      - script.execute: update_f2_coordinator
 
   - platform: dallas_temp
     address: 0x00000000000003
@@ -771,6 +1087,7 @@ sensor:
       - mqtt.publish:
           topic: ${mqtt_prefix}/floor2/zone3/temperature
           payload: !lambda "return to_string(x);"
+      - script.execute: update_f2_coordinator
 
   - platform: dallas_temp
     address: 0x00000000000004
@@ -868,6 +1185,8 @@ sensor:
       if (iaq > 150) {
         id(fan0).make_call().set_state(true).set_speed(100).perform();
       }
+      // Update zone LED AQI colours on idle zones
+      id(update_f2_coordinator).execute();
       return iaq;
 
   # ── Diagnostics ──────────────────────────────────────────────────────────
@@ -959,170 +1278,177 @@ binary_sensor:
         - switch.turn_off: furnace_spare
         - light.turn_off: { id: RGB_LED }
 
-  # ── ZONE 1 thermostat inputs (Floor 2) — PCF8575 pins 4–7 ───────────────
+  # ── ZONE 1 thermostat inputs (Floor 2, Master Bedroom) — PCF8575 pins 4–7 ─
   - platform: gpio
-    name: "THERM_1_Y1"
+    name: "Zone 1 Cool Request"
     id: ZONE_1_Y1
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 4, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_1, position: 1.0 }
-        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"C\"}");
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_1
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
+        - script.execute: satisfied_flash_z1
 
   - platform: gpio
-    name: "THERM_1_W"
+    name: "Zone 1 Heat Request"
     id: ZONE_1_W
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 5, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_1, position: 1.0 }
-        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\"}");
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_1
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
+        - script.execute: satisfied_flash_z1
 
   - platform: gpio
-    name: "THERM_1_G"
+    name: "Zone 1 Fan Request"
     id: ZONE_1_G
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 6, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_1, position: 1.0 }
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_1
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
 
+  # PCF8575 pin 7 — Zone 1 OPT wire repurposed as window reed-switch input
+  # Wired NC (normally-closed reed): inverted: true → state=true when window OPEN
   - platform: gpio
-    name: "THERM_1_OPT"
-    id: ZONE_1_OPT
+    name: "Zone 1 Window"
+    id: WIN_Z1
+    device_class: window
     trigger_on_initial_state: true
-    pin: { pcf8574: pcf8575_hub, number: 7, mode: { input: true }, inverted: false }
-    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    pin: { pcf8574: pcf8575_hub, number: 7, mode: { input: true }, inverted: true }
+    filters: [ delayed_on: 100ms, delayed_off: 100ms ]
+    on_press:
+      then:
+        - script.execute: update_f2_coordinator
+    on_release:
+      then:
+        - script.execute: update_f2_coordinator
 
   # ── ZONE 2 thermostat inputs (Floor 2) — PCF8575 pins 8–11 ──────────────
   - platform: gpio
-    name: "THERM_2_Y1"
+    name: "Zone 2 Cool Request"
     id: ZONE_2_Y1
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 8, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_2, position: 1.0 }
-        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"C\"}");
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_2
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
+        - script.execute: satisfied_flash_z2
 
   - platform: gpio
-    name: "THERM_2_W"
+    name: "Zone 2 Heat Request"
     id: ZONE_2_W
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 9, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_2, position: 1.0 }
-        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\"}");
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_2
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
+        - script.execute: satisfied_flash_z2
 
   - platform: gpio
-    name: "THERM_2_G"
+    name: "Zone 2 Fan Request"
     id: ZONE_2_G
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 10, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_2, position: 1.0 }
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_2
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
 
+  # PCF8575 pin 11 — Zone 2 OPT wire repurposed as window reed-switch input
   - platform: gpio
-    name: "THERM_2_OPT"
-    id: ZONE_2_OPT
+    name: "Zone 2 Window"
+    id: WIN_Z2
+    device_class: window
     trigger_on_initial_state: true
-    pin: { pcf8574: pcf8575_hub, number: 11, mode: { input: true }, inverted: false }
-    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    pin: { pcf8574: pcf8575_hub, number: 11, mode: { input: true }, inverted: true }
+    filters: [ delayed_on: 100ms, delayed_off: 100ms ]
+    on_press:
+      then:
+        - script.execute: update_f2_coordinator
+    on_release:
+      then:
+        - script.execute: update_f2_coordinator
 
   # ── ZONE 3 thermostat inputs (Floor 2) — PCF8575 pins 12–15 ─────────────
   - platform: gpio
-    name: "THERM_3_Y1"
+    name: "Zone 3 Cool Request"
     id: ZONE_3_Y1
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 12, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_3, position: 1.0 }
-        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"C\"}");
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_3
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
+        - script.execute: satisfied_flash_z3
 
   - platform: gpio
-    name: "THERM_3_W"
+    name: "Zone 3 Heat Request"
     id: ZONE_3_W
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 13, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_3, position: 1.0 }
-        - lambda: mqtt::global_mqtt_client->publish("${faikin_ac2}/command", "{\"power\":true,\"mode\":\"H\"}");
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_3
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
+        - script.execute: satisfied_flash_z3
 
   - platform: gpio
-    name: "THERM_3_G"
+    name: "Zone 3 Fan Request"
     id: ZONE_3_G
     trigger_on_initial_state: true
     pin: { pcf8574: pcf8575_hub, number: 14, mode: { input: true }, inverted: false }
     filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
     on_press:
       then:
-        - cover.control: { id: HVAC_DAMPER_3, position: 1.0 }
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
     on_release:
       then:
-        - cover.close: HVAC_DAMPER_3
-        - script.execute: update_f2_fans
+        - script.execute: update_f2_coordinator
 
+  # PCF8575 pin 15 — Zone 3 OPT wire repurposed as window reed-switch input
   - platform: gpio
-    name: "THERM_3_OPT"
-    id: ZONE_3_OPT
+    name: "Zone 3 Window"
+    id: WIN_Z3
+    device_class: window
     trigger_on_initial_state: true
-    pin: { pcf8574: pcf8575_hub, number: 15, mode: { input: true }, inverted: false }
-    filters: [ delayed_on: 5ms, delayed_off: 1400ms ]
+    pin: { pcf8574: pcf8575_hub, number: 15, mode: { input: true }, inverted: true }
+    filters: [ delayed_on: 100ms, delayed_off: 100ms ]
+    on_press:
+      then:
+        - script.execute: update_f2_coordinator
+    on_release:
+      then:
+        - script.execute: update_f2_coordinator
 
   # ── AQI alerts ──────────────────────────────────────────────────────────
   - platform: template
@@ -1172,6 +1498,104 @@ text_sensor:
     icon: "mdi:leaf"
     lambda: "return {\"Initializing...\"};"
 
+# ─── NUMBER ENTITIES — zone weights & duct setpoints ─────────────────────────
+number:
+  # Zone priority weights (1–5). Zone 1 = Master Bedroom, default weight 2.
+  - platform: template
+    name: "Zone 1 Priority Weight"
+    id: z1_weight
+    icon: "mdi:weight"
+    min_value: 1
+    max_value: 5
+    step: 1
+    initial_value: 2
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - script.execute: update_f2_coordinator
+
+  - platform: template
+    name: "Zone 2 Priority Weight"
+    id: z2_weight
+    icon: "mdi:weight"
+    min_value: 1
+    max_value: 5
+    step: 1
+    initial_value: 1
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - script.execute: update_f2_coordinator
+
+  - platform: template
+    name: "Zone 3 Priority Weight"
+    id: z3_weight
+    icon: "mdi:weight"
+    min_value: 1
+    max_value: 5
+    step: 1
+    initial_value: 1
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - script.execute: update_f2_coordinator
+
+  - platform: template
+    name: "Bathroom Priority Weight"
+    id: zbath_weight
+    icon: "mdi:weight"
+    min_value: 1
+    max_value: 5
+    step: 1
+    initial_value: 1
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - script.execute: update_f2_coordinator
+
+  # Duct temperature setpoints for satisfaction detection.
+  # Set to expected supply-air temp for the current season:
+  #   Heat mode: ~35–40°C  |  Cool mode: ~10–14°C
+  - platform: template
+    name: "Zone 1 Duct Setpoint"
+    id: z1_duct_setpoint
+    icon: "mdi:thermometer-check"
+    unit_of_measurement: "°C"
+    min_value: 5.0
+    max_value: 60.0
+    step: 0.5
+    initial_value: 35.0
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    name: "Zone 2 Duct Setpoint"
+    id: z2_duct_setpoint
+    icon: "mdi:thermometer-check"
+    unit_of_measurement: "°C"
+    min_value: 5.0
+    max_value: 60.0
+    step: 0.5
+    initial_value: 35.0
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    name: "Zone 3 Duct Setpoint"
+    id: z3_duct_setpoint
+    icon: "mdi:thermometer-check"
+    unit_of_measurement: "°C"
+    min_value: 5.0
+    max_value: 60.0
+    step: 0.5
+    initial_value: 35.0
+    restore_value: true
+    optimistic: true
+
 # ─── TIME ─────────────────────────────────────────────────────────────────────
 time:
   - platform: sntp
@@ -1213,3 +1637,118 @@ light:
           update_interval: 1.5s
           min_brightness: 0%
           max_brightness: 100%
+
+  # ── Zone LED strips (10× WS2812B per zone, under thermostat base) ─────────
+  # GPIO10–13: RMT-capable, free on ESP32-S3-DevKitC-1
+  # Wire: 5V + GND from thermostat cable spares, data via 330Ω series resistor
+  - platform: esp32_rmt_led_strip
+    name: "Zone 1 LED"
+    id: zone1_led
+    rgb_order: GRB
+    pin: GPIO10
+    num_leds: 10
+    chipset: ws2812
+    rmt_symbols: 192
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 2s
+          update_interval: 2s
+          min_brightness: 10%
+          max_brightness: 100%
+      - strobe:
+          name: "Fast Strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 150ms
+            - state: false
+              brightness: 0%
+              duration: 100ms
+
+  - platform: esp32_rmt_led_strip
+    name: "Zone 2 LED"
+    id: zone2_led
+    rgb_order: GRB
+    pin: GPIO11
+    num_leds: 10
+    chipset: ws2812
+    rmt_symbols: 192
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 2s
+          update_interval: 2s
+          min_brightness: 10%
+          max_brightness: 100%
+      - strobe:
+          name: "Fast Strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 150ms
+            - state: false
+              brightness: 0%
+              duration: 100ms
+
+  - platform: esp32_rmt_led_strip
+    name: "Zone 3 LED"
+    id: zone3_led
+    rgb_order: GRB
+    pin: GPIO12
+    num_leds: 10
+    chipset: ws2812
+    rmt_symbols: 192
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 2s
+          update_interval: 2s
+          min_brightness: 10%
+          max_brightness: 100%
+      - strobe:
+          name: "Fast Strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 150ms
+            - state: false
+              brightness: 0%
+              duration: 100ms
+
+  - platform: esp32_rmt_led_strip
+    name: "Bathroom LED"
+    id: bath_led
+    rgb_order: GRB
+    pin: GPIO13
+    num_leds: 10
+    chipset: ws2812
+    rmt_symbols: 192
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 2s
+          update_interval: 2s
+          min_brightness: 10%
+          max_brightness: 100%
+      - strobe:
+          name: "Fast Strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 150ms
+            - state: false
+              brightness: 0%
+              duration: 100ms
