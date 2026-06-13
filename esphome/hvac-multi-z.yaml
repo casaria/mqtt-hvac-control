@@ -56,6 +56,13 @@ substitutions:
   faikin_ac1:     "Faikout/AC1"     # Faikin device name for Floor 1 Daikin
   faikin_ac2:     "Faikout/AC2"     # Faikin device name for Floor 2 Daikin
   mqtt_prefix:    "HVAC_MULTI_Z"
+  # ── Zigbee window sensor IEEE addresses (from Zigbee2MQTT device list) ───
+  # Replace placeholder values with actual addresses before flashing
+  zwin_z0_ieee:   "0x00158d008b643f13"   # Floor 1 Zone 0 — Aqara MCCGQ11LM (confirmed)
+  zwin_z1_ieee:   "0xTODO_ZONE1_IEEE"    # Floor 2 Zone 1 (Master Bedroom)
+  zwin_z2_ieee:   "0xTODO_ZONE2_IEEE"    # Floor 2 Zone 2
+  zwin_z3_ieee:   "0xTODO_ZONE3_IEEE"    # Floor 2 Zone 3
+  zwin_bath_ieee: "0xTODO_BATH_IEEE"     # Floor 2 Bathroom
 
 esphome:
   name: ${device_name}
@@ -70,6 +77,11 @@ esphome:
           topic: ${mqtt_prefix}/status
           payload: "online"
           retain: true
+      # Publish retained settings so dashboard always reflects current state
+      - lambda: |-
+          mqtt::global_mqtt_client->publish(
+              "${mqtt_prefix}/settings/window_sensors/state",
+              id(win_sensors_enabled) ? "on" : "off", 0, true);
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -106,9 +118,18 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  # ── Window sensor master enable ──────────────────────────────────────────
+  # Set false to disable window inhibition (e.g. dead batteries).
+  # Controlled via MQTT: HVAC_MULTI_Z/settings/window_sensors/set  (on / off)
+  # State published retained: HVAC_MULTI_Z/settings/window_sensors/state
+  - id: win_sensors_enabled
+    type: bool
+    restore_value: true
+    initial_value: 'true'
+
   # Zone window state — set via MQTT from Zigbee window sensors (Zigbee2MQTT)
   # All zones use Aqara/Zigbee contact sensors via Zigbee2MQTT; no hardwired reed switches
-  - id: z0_win_open    # Floor 1 Zone 0 — Aqara MCCGQ11LM (0x00158d008b643f13)
+  - id: z0_win_open    # Floor 1 Zone 0 — Aqara MCCGQ11LM (confirmed)
     type: bool
     restore_value: false
     initial_value: 'false'
@@ -234,7 +255,7 @@ mqtt:
 
     # ── Floor 1 Zone 0 window sensor — Aqara MCCGQ11LM via Zigbee2MQTT ───────
     # contact:true = closed, contact:false = open
-    - topic: "zigbee2mqtt/0x00158d008b643f13"
+    - topic: "zigbee2mqtt/${zwin_z0_ieee}"
       then:
         - lambda: |-
             // Parse {"contact": true/false, ...}
@@ -248,20 +269,22 @@ mqtt:
             bool was_open = id(z0_win_open);
             id(z0_win_open) = !contact;   // contact=false → window open
 
-            if (!was_open && id(z0_win_open)) {
-                // Window just OPENED — shut down Floor 1 HVAC immediately
+            bool effective_open = id(z0_win_open) && id(win_sensors_enabled);
+            bool was_effective  = was_open           && id(win_sensors_enabled);
+
+            if (!was_effective && effective_open) {
+                // Window just became effectively OPEN — shut down Floor 1 HVAC
                 mqtt::global_mqtt_client->publish("${faikin_ac1}/command", "{\"power\":false}");
                 id(furnace_W).turn_off();
                 id(furnace_G).turn_off();
                 id(furnace_Y_BLOWER).turn_off();
-                // Red pulse on status LED to indicate inhibited state
                 auto c = id(RGB_LED).make_call();
                 c.set_state(true); c.set_rgb(1.0f, 0.0f, 0.0f);
                 c.set_brightness(1.0f); c.set_effect("pulse");
                 c.perform();
                 ESP_LOGW("win_z0", "Window OPEN — Floor 1 HVAC inhibited");
-            } else if (was_open && !id(z0_win_open)) {
-                // Window just CLOSED — clear inhibit LED
+            } else if (was_effective && !effective_open) {
+                // Window closed (or sensors disabled) — clear inhibit LED
                 id(RGB_LED).make_call().set_state(false).perform();
                 ESP_LOGI("win_z0", "Window CLOSED — Floor 1 HVAC inhibit cleared");
             }
@@ -270,31 +293,99 @@ mqtt:
                 "${mqtt_prefix}/floor1/zone0/window/state",
                 id(z0_win_open) ? "open" : "closed", 0, true);
 
-    # ── Zone window sensors via Zigbee2MQTT (Floor 2 zones) ──────────────────
-    # Publish "open"/"closed" (or "true"/"false") from a Zigbee2MQTT automation
-    - topic: ${mqtt_prefix}/floor2/zone1/window/set
+    # ── Window sensor master enable (dashboard-accessible setting) ───────────
+    # Payload: "on" or "off"   — disables all window inhibition (e.g. dead batteries)
+    - topic: ${mqtt_prefix}/settings/window_sensors/set
       then:
         - lambda: |-
-            id(z1_win_open) = (x == "open" || x == "true" || x == "1");
+            id(win_sensors_enabled) = (x == "on" || x == "true" || x == "1");
+            mqtt::global_mqtt_client->publish(
+                "${mqtt_prefix}/settings/window_sensors/state",
+                id(win_sensors_enabled) ? "on" : "off", 0, true);
+            ESP_LOGI("settings", "Window sensors %s",
+                     id(win_sensors_enabled) ? "ENABLED" : "DISABLED");
         - script.execute: update_f2_coordinator
 
-    - topic: ${mqtt_prefix}/floor2/zone2/window/set
+    # ── Floor 2 Zone 1 window — Zigbee contact sensor via Zigbee2MQTT ────────
+    # Update zwin_z1_ieee substitution with actual IEEE address
+    - topic: "zigbee2mqtt/${zwin_z1_ieee}"
       then:
         - lambda: |-
-            id(z2_win_open) = (x == "open" || x == "true" || x == "1");
-        - script.execute: update_f2_coordinator
+            bool contact = true;
+            auto pos = x.find("\"contact\":");
+            if (pos != std::string::npos) {
+                pos += 10;
+                while (pos < x.size() && x[pos] == ' ') pos++;
+                contact = (x.substr(pos, 4) == "true");
+            }
+            bool was_open = id(z1_win_open);
+            id(z1_win_open) = !contact;
+            if (was_open != id(z1_win_open)) {
+                mqtt::global_mqtt_client->publish(
+                    "${mqtt_prefix}/floor2/zone1/window/state",
+                    id(z1_win_open) ? "open" : "closed", 0, true);
+                id(update_f2_coordinator).execute();
+            }
 
-    - topic: ${mqtt_prefix}/floor2/zone3/window/set
+    # ── Floor 2 Zone 2 window ────────────────────────────────────────────────
+    - topic: "zigbee2mqtt/${zwin_z2_ieee}"
       then:
         - lambda: |-
-            id(z3_win_open) = (x == "open" || x == "true" || x == "1");
-        - script.execute: update_f2_coordinator
+            bool contact = true;
+            auto pos = x.find("\"contact\":");
+            if (pos != std::string::npos) {
+                pos += 10;
+                while (pos < x.size() && x[pos] == ' ') pos++;
+                contact = (x.substr(pos, 4) == "true");
+            }
+            bool was_open = id(z2_win_open);
+            id(z2_win_open) = !contact;
+            if (was_open != id(z2_win_open)) {
+                mqtt::global_mqtt_client->publish(
+                    "${mqtt_prefix}/floor2/zone2/window/state",
+                    id(z2_win_open) ? "open" : "closed", 0, true);
+                id(update_f2_coordinator).execute();
+            }
 
-    - topic: ${mqtt_prefix}/floor2/bathroom/window/set
+    # ── Floor 2 Zone 3 window ────────────────────────────────────────────────
+    - topic: "zigbee2mqtt/${zwin_z3_ieee}"
       then:
         - lambda: |-
-            id(bath_win_open) = (x == "open" || x == "true" || x == "1");
-        - script.execute: update_f2_coordinator
+            bool contact = true;
+            auto pos = x.find("\"contact\":");
+            if (pos != std::string::npos) {
+                pos += 10;
+                while (pos < x.size() && x[pos] == ' ') pos++;
+                contact = (x.substr(pos, 4) == "true");
+            }
+            bool was_open = id(z3_win_open);
+            id(z3_win_open) = !contact;
+            if (was_open != id(z3_win_open)) {
+                mqtt::global_mqtt_client->publish(
+                    "${mqtt_prefix}/floor2/zone3/window/state",
+                    id(z3_win_open) ? "open" : "closed", 0, true);
+                id(update_f2_coordinator).execute();
+            }
+
+    # ── Floor 2 Bathroom window ──────────────────────────────────────────────
+    - topic: "zigbee2mqtt/${zwin_bath_ieee}"
+      then:
+        - lambda: |-
+            bool contact = true;
+            auto pos = x.find("\"contact\":");
+            if (pos != std::string::npos) {
+                pos += 10;
+                while (pos < x.size() && x[pos] == ' ') pos++;
+                contact = (x.substr(pos, 4) == "true");
+            }
+            bool was_open = id(bath_win_open);
+            id(bath_win_open) = !contact;
+            if (was_open != id(bath_win_open)) {
+                mqtt::global_mqtt_client->publish(
+                    "${mqtt_prefix}/floor2/bathroom/window/state",
+                    id(bath_win_open) ? "open" : "closed", 0, true);
+                id(update_f2_coordinator).execute();
+            }
 
     # ── Floor 2 damper direct position override ───────────
     # Bathroom: triggered by Zigbee2MQTT automation once thermostat is configured
@@ -923,11 +1014,13 @@ script:
       - lambda: |-
           // ── Zone input state ──────────────────────────────────────────────
           // Indices: 0=Z1(master,w=2), 1=Z2(w=1), 2=Z3(w=1), 3=Bath(w=1)
+          // When win_sensors_enabled=false all windows treated as closed (no inhibition)
+          bool ws_en = id(win_sensors_enabled);
           bool w_open[4] = {
-              id(WIN_Z1).state,
-              id(WIN_Z2).state,
-              id(WIN_Z3).state,
-              id(bath_win_open)
+              ws_en && id(z1_win_open),
+              ws_en && id(z2_win_open),
+              ws_en && id(z3_win_open),
+              ws_en && id(bath_win_open)
           };
           bool req_heat[4] = {
               id(ZONE_1_W).state,
@@ -1271,8 +1364,16 @@ sensor:
 
 # ─── BINARY SENSORS ──────────────────────────────────────────────────────────
 binary_sensor:
-  # ── Floor 1 Zone 0 window sensor — Aqara MCCGQ11LM via Zigbee2MQTT ────────
-  # State driven by MQTT handler above (zigbee2mqtt/0x00158d008b643f13)
+  # ── Window sensors master enable — visible in HA / future dashboard ────────
+  # Set via MQTT: HVAC_MULTI_Z/settings/window_sensors/set  (on / off)
+  - platform: template
+    name: "Window Sensors Enabled"
+    id: win_sensors_enabled_sensor
+    device_class: running
+    icon: "mdi:window-open-variant"
+    lambda: "return id(win_sensors_enabled);"
+
+  # ── Zone window sensors — all Zigbee via Zigbee2MQTT ─────────────────────
   - platform: template
     name: "Zone 0 Window"
     id: WIN_Z0
@@ -1290,7 +1391,7 @@ binary_sensor:
       then:
         - if:
             condition:
-              lambda: "return !id(z0_win_open);"
+              lambda: "return !id(z0_win_open) || !id(win_sensors_enabled);"
             then:
               - switch.turn_on: furnace_G
               - mqtt.publish: { topic: "${mqtt_prefix}/floor1/zone0/mode", payload: "fan" }
@@ -1311,7 +1412,7 @@ binary_sensor:
       then:
         - if:
             condition:
-              lambda: "return !id(z0_win_open);"
+              lambda: "return !id(z0_win_open) || !id(win_sensors_enabled);"
             then:
               - switch.turn_on: furnace_Y_BLOWER
               - light.turn_on: { id: RGB_LED, brightness: 60%, red: 0%, green: 0%, blue: 80%, effect: pulse }
@@ -1336,7 +1437,7 @@ binary_sensor:
       then:
         - if:
             condition:
-              lambda: "return !id(z0_win_open);"
+              lambda: "return !id(z0_win_open) || !id(win_sensors_enabled);"
             then:
               - lambda: |-
                   if (id(sel_f1_heat_mode).current_option() == "heat_pump") {
