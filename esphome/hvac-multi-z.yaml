@@ -8,8 +8,7 @@
 #  │  • Gas furnace on relay4_4_1 pins 4–6 (W1, W2, G)     │
 #  │  • Thermostat inputs: PCF8575 pins 0–3               │
 #  │  • Signal routing: relay4_4_1 (R1_1–R1_4)           │
-#  │  • No duct damper on Floor 1 (SSR_0/SSR_1 in use for │
-#  │    other purposes)                                   │
+#  │  • No damper or thermostat control on Floor 1        │
 #  │  • Heating modes: heat_pump | gas | combined         │
 #  └──────────────────────────────────────────────────────┘
 #  ┌─ FLOOR 2 (Zones 1–3) ───────────────────────────────┐
@@ -28,11 +27,11 @@
 #  No Arduino-dependent external component needed.
 #
 #  SSR assignment (PCF8574, 2-relay proportional, power-open + power-close):
-#    SSR_0: Floor1 spare/in-use  SSR_4: Zone 2 CLOSE
-#    SSR_1: Floor1 spare/in-use  SSR_5: Zone 2 OPEN
-#    SSR_2: Zone 1 CLOSE         SSR_6: Zone 3 CLOSE
-#    SSR_3: Zone 1 OPEN          SSR_7: Zone 3 OPEN
-#  NOTE: No duct damper on Floor 1. SSR_0+SSR_1 wired but not used as damper.
+#    SSR_0: Bathroom CLOSE   SSR_4: Zone 2 CLOSE
+#    SSR_1: Bathroom OPEN    SSR_5: Zone 2 OPEN
+#    SSR_2: Zone 1 CLOSE     SSR_6: Zone 3 CLOSE
+#    SSR_3: Zone 1 OPEN      SSR_7: Zone 3 OPEN
+#  All 4 dampers are Floor 2. Bathroom (SSR_0+1) thermostat TBD via Zigbee2MQTT.
 #
 #  Furnace relays on relay4_4_1 (PCA9554 0x38) — pins 0–3:  ← CONFIRMED correct
 #    furnace_Y_BLOWER → relay4_4_1 pin 0
@@ -158,6 +157,13 @@ mqtt:
             mqtt::global_mqtt_client->publish("${faikin_ac2}/command", x);
 
     # ── Floor 2 damper direct position override ───────────
+    # Bathroom: triggered by Zigbee2MQTT automation once thermostat is configured
+    - topic: ${mqtt_prefix}/floor2/bathroom/damper/position/set
+      then:
+        - cover.control:
+            id: HVAC_DAMPER_0
+            position: !lambda "return atof(x.c_str()) / 100.0f;"
+
     - topic: ${mqtt_prefix}/floor2/zone1/damper/position/set
       then:
         - cover.control:
@@ -181,7 +187,7 @@ mqtt:
       then:
         - lambda: |-
             if (x == "all_off") {
-              // No damper on Floor 1 — dampers 1-3 only (Floor 2)
+              id(HVAC_DAMPER_0).make_call().set_command_close().perform();
               id(HVAC_DAMPER_1).make_call().set_command_close().perform();
               id(HVAC_DAMPER_2).make_call().set_command_close().perform();
               id(HVAC_DAMPER_3).make_call().set_command_close().perform();
@@ -464,14 +470,16 @@ switch:
   # Zone 2: SSR_4 (CLOSE) + SSR_5 (OPEN)
   # Zone 3: SSR_6 (CLOSE) + SSR_7 (OPEN)
 
-  # !! CLAUDE DO NOT TOUCH !! Must ask first — SSR_0/SSR_1 in use on Floor 1
+  # Floor 2 Bathroom damper — thermostat TBD (Zigbee2MQTT wireless thermostat)
+  # HVAC_DAMPER_0 cover entity will be triggered via MQTT from Zigbee2MQTT bridge
+  # once the Zigbee thermostat is configured. SSR_0/SSR_1 are wired and ready.
   - platform: gpio
-    name: "Floor 1 SSR_0"
+    name: "Bathroom Damper CLOSE"
     id: SSR_0
     pin: { pcf8574: pcf8574_hub, number: 0, mode: { output: true }, inverted: true }
 
   - platform: gpio
-    name: "Floor 1 SSR_1"
+    name: "Bathroom Damper OPEN"
     id: SSR_1
     pin: { pcf8574: pcf8574_hub, number: 1, mode: { output: true }, inverted: true }
 
@@ -586,12 +594,40 @@ select:
 #
 #  ⚠ Never energise OPEN and CLOSE simultaneously.
 #
-#  Floor 1 Zone 0: NO physical damper installed.
+#  All 4 dampers are Floor 2:
+#  Damper 0: SSR_0 (CLOSE), SSR_1 (OPEN)  — Floor 2 Bathroom (Zigbee therm TBD)
 #  Damper 1: SSR_2 (CLOSE), SSR_3 (OPEN)  — Floor 2 Zone 1
 #  Damper 2: SSR_4 (CLOSE), SSR_5 (OPEN)  — Floor 2 Zone 2
 #  Damper 3: SSR_6 (CLOSE), SSR_7 (OPEN)  — Floor 2 Zone 3
 
 cover:
+  # ── Bathroom damper — triggered via MQTT from Zigbee2MQTT when thermostat ready
+  - platform: time_based
+    name: "HVAC Damper Bathroom"
+    id: HVAC_DAMPER_0
+    device_class: damper
+    assumed_state: true
+    open_action:
+      - switch.turn_off: SSR_0
+      - switch.turn_on:  SSR_1
+    close_action:
+      - switch.turn_off: SSR_1
+      - switch.turn_on:  SSR_0
+    stop_action:
+      - switch.turn_off: SSR_0
+      - switch.turn_off: SSR_1
+    open_duration: 90s
+    close_duration: 90s
+    on_idle:
+      - mqtt.publish_json:
+          topic: ${mqtt_prefix}/floor2/bathroom/damper/state
+          retain: true
+          payload: |-
+            root["position"] = (int)(id(HVAC_DAMPER_0).position * 100);
+            auto s = id(HVAC_DAMPER_0).current_operation;
+            root["state"] = (s == esphome::cover::COVER_OPERATION_OPENING) ? "opening" :
+                            (s == esphome::cover::COVER_OPERATION_CLOSING) ? "closing" : "stopped";
+
   - platform: time_based
     name: "HVAC Damper 1"
     id: HVAC_DAMPER_1
