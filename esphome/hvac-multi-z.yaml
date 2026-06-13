@@ -11,13 +11,15 @@
 #  │  • No damper or thermostat control on Floor 1        │
 #  │  • Heating modes: heat_pump | gas | combined         │
 #  └──────────────────────────────────────────────────────┘
-#  ┌─ FLOOR 2 (Zones 1–3) ───────────────────────────────┐
+#  ┌─ FLOOR 2 (4 zones) ─────────────────────────────────┐
 #  │  • Daikin split via Faikin firmware (MQTT: Faikin/AC2)│
-#  │  • 3 zone thermostats on PCF8575 pins 4–15           │
-#  │  • No signal routing relay board for Floor 2 zones    │
-#  │  • Dampers: HVAC_DAMPER_1/2/3 (SSR_2–7, 2 SSR each) │
+#  │  • Zones 1-3: hardwired thermostats, PCF8575 pins 4–15│
+#  │  • Zone Bathroom: Zigbee wireless thermostat (TBD)   │
+#  │    → Zigbee2MQTT publishes to MQTT_PREFIX/floor2/    │
+#  │      bathroom/damper/position/set                    │
+#  │  • 4× dampers: HVAC_DAMPER_0–3 (SSR_0–7, 2 per zone)│
 #  │  • 4× PWM fans (fanhub_pwm0–3), auto-speed per zone │
-#  │  • 3× DS18B20 zone temps + 4× BMP085 (Optional) duct sensors   │
+#  │  • 3× DS18B20 zone temps + 4× BMP085 duct sensors   │
 #  │  • BME680 AQI (calculated IAQ 0–500)                 │
 #  └──────────────────────────────────────────────────────┘
 #
