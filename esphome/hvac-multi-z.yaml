@@ -320,10 +320,12 @@ mqtt:
             }
             bool was_open = id(z1_win_open);
             id(z1_win_open) = !contact;
-            if (was_open != id(z1_win_open)) {
+            bool effective_open = id(z1_win_open) && id(win_sensors_enabled);
+            bool was_effective  = was_open          && id(win_sensors_enabled);
+            if (was_effective != effective_open || was_open != id(z1_win_open)) {
                 mqtt::global_mqtt_client->publish(
                     "${mqtt_prefix}/floor2/zone1/window/state",
-                    id(z1_win_open) ? "open" : "closed", 0, true);
+                    effective_open ? "open" : "closed", 0, true);
                 id(update_f2_coordinator).execute();
             }
 
@@ -340,10 +342,12 @@ mqtt:
             }
             bool was_open = id(z2_win_open);
             id(z2_win_open) = !contact;
-            if (was_open != id(z2_win_open)) {
+            bool effective_open = id(z2_win_open) && id(win_sensors_enabled);
+            bool was_effective  = was_open          && id(win_sensors_enabled);
+            if (was_effective != effective_open || was_open != id(z2_win_open)) {
                 mqtt::global_mqtt_client->publish(
                     "${mqtt_prefix}/floor2/zone2/window/state",
-                    id(z2_win_open) ? "open" : "closed", 0, true);
+                    effective_open ? "open" : "closed", 0, true);
                 id(update_f2_coordinator).execute();
             }
 
@@ -360,10 +364,12 @@ mqtt:
             }
             bool was_open = id(z3_win_open);
             id(z3_win_open) = !contact;
-            if (was_open != id(z3_win_open)) {
+            bool effective_open = id(z3_win_open) && id(win_sensors_enabled);
+            bool was_effective  = was_open          && id(win_sensors_enabled);
+            if (was_effective != effective_open || was_open != id(z3_win_open)) {
                 mqtt::global_mqtt_client->publish(
                     "${mqtt_prefix}/floor2/zone3/window/state",
-                    id(z3_win_open) ? "open" : "closed", 0, true);
+                    effective_open ? "open" : "closed", 0, true);
                 id(update_f2_coordinator).execute();
             }
 
@@ -380,10 +386,12 @@ mqtt:
             }
             bool was_open = id(bath_win_open);
             id(bath_win_open) = !contact;
-            if (was_open != id(bath_win_open)) {
+            bool effective_open = id(bath_win_open) && id(win_sensors_enabled);
+            bool was_effective  = was_open            && id(win_sensors_enabled);
+            if (was_effective != effective_open || was_open != id(bath_win_open)) {
                 mqtt::global_mqtt_client->publish(
                     "${mqtt_prefix}/floor2/bathroom/window/state",
-                    id(bath_win_open) ? "open" : "closed", 0, true);
+                    effective_open ? "open" : "closed", 0, true);
                 id(update_f2_coordinator).execute();
             }
 
