@@ -1151,14 +1151,6 @@ script:
               (int)id(zbath_weight).state
           };
 
-          // ── Duct satisfaction (within 0.5°C of setpoint while active) ────
-          bool duct_ok[4] = {
-              id(z1_duct_temp).has_state() && std::abs(id(z1_duct_temp).state - id(z1_duct_setpoint).state) <= 0.5f,
-              id(z2_duct_temp).has_state() && std::abs(id(z2_duct_temp).state - id(z2_duct_setpoint).state) <= 0.5f,
-              id(z3_duct_temp).has_state() && std::abs(id(z3_duct_temp).state - id(z3_duct_setpoint).state) <= 0.5f,
-              false  // no duct sensor for bathroom
-          };
-
           // ── Weighted majority vote (window-open zones excluded) ───────────
           int heat_score = 0, cool_score = 0, fan_score = 0;
           for (int i = 0; i < 4; i++) {
@@ -1257,11 +1249,6 @@ script:
                   // Window open — red fast strobe (inhibited)
                   c.set_state(true); c.set_rgb(1.0f, 0.0f, 0.0f);
                   c.set_brightness(1.0f); c.set_effect("Fast Strobe");
-
-              } else if (open_d[i] && duct_ok[i] && (req_heat[i] || req_cool[i])) {
-                  // Active delivery AND duct reached setpoint — steady green (satisfied)
-                  c.set_state(true); c.set_rgb(0.0f, 1.0f, 0.15f);
-                  c.set_brightness(0.8f); c.set_effect("none");
 
               } else if (req_heat[i] && open_d[i]) {
                   // Heating — warm orange slow pulse
